@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect x="1.5" y="1.5" width="45" height="45" rx="11" ry="11" fill="#6C4CF8"/>
+  <text x="24" y="31" text-anchor="middle"
+        font-family="Arial, 'Liberation Sans', 'DejaVu Sans', sans-serif"
+        font-weight="700" font-size="20" fill="#FFFFFF" letter-spacing="0.3">OLE</text>
+</svg>
