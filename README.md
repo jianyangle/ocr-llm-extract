@@ -54,7 +54,7 @@ PySide6 桌面应用，用于批量处理**发票、名片**等版式文档。OC
 ### 环境要求
 
 - **Python 3.12**
-- 操作系统：Windows / Linux / macOS
+- 操作系统：Linux / Windows（源码运行兼容目标）；macOS 未验证
 - LLM 后端：OpenAI 兼容 API key，**或**本地 [Ollama](https://ollama.com/)
 - OCR 模型随仓库提供（`models/`，约 66MB），无需额外下载
 
@@ -64,15 +64,23 @@ PySide6 桌面应用，用于批量处理**发票、名片**等版式文档。OC
 # 1. 克隆仓库
 git clone https://github.com/jianyangle/ocr-llm-extract.git
 cd ocr-llm-extract
+```
 
-# 2. 创建并激活虚拟环境
+Linux / WSL：
+
+```bash
 python3.12 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python src/app.py
+```
 
-# 3. 安装依赖
-pip install -r requirements.txt
+Windows PowerShell：
 
-# 4. 运行
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 python src/app.py
 ```
 
@@ -85,7 +93,7 @@ python src/app.py
 - **OpenAI 兼容**：填 `base_url`、`api_key`、`model`，点「测试连接」验证。
 - **Ollama**：填本地地址（默认 `http://localhost:11434`）和模型名。
 
-配置保存在 `~/.ocr_extract_app/config.json`，API key 在日志中自动脱敏。
+配置保存在用户主目录下的 `.ocr_extract_app/config.json`，API key 在日志中自动脱敏。
 
 ## 使用说明
 
@@ -117,7 +125,7 @@ Examples:
 
 ## 配置
 
-全局配置存于 `~/.ocr_extract_app/config.json`，常用字段：
+全局配置存于用户主目录下的 `.ocr_extract_app/config.json`，常用字段：
 
 | 字段 | 取值 | 说明 |
 |------|------|------|
@@ -147,6 +155,8 @@ data/icons/           # 界面图标
 ```
 
 ## 打包发布
+
+> 本节是 Windows PyInstaller 打包参考，不属于 Linux/Windows 源码运行兼容验收。源码运行请按"快速开始"中的 Linux / WSL 或 Windows PowerShell 命令执行。
 
 Windows 打包（PyInstaller）：
 
