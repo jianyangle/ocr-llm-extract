@@ -270,7 +270,7 @@ class SettingsDialog(QDialog):
         self.grounding_mode_combo.addItem("关闭", "off")
         self.grounding_mode_combo.addItem("平衡", "balanced")
         self.grounding_mode_combo.addItem("严格", "strict")
-        self.strategy_help_label = QLabel("高级参数可通过 ~/.ocr_extract_app/config.json 调整。")
+        self.strategy_help_label = QLabel("高级参数可通过用户主目录下的 .ocr_extract_app/config.json 调整。")
         self.strategy_help_label.setWordWrap(True)
         self.strategy_help_label.setObjectName("statusLabel")
 
