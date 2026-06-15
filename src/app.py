@@ -30,6 +30,26 @@ from src.ui.settings_dialog import SettingsController
 logger = logging.getLogger(__name__)
 
 
+def _suppress_subprocess_console() -> None:
+    """消除 windowed 冻结包启动时的控制台黑屏闪现。
+
+    paddle 在导入期会执行 `where ccache` 探测编译缓存（`paddle.utils.cpp_extension`），
+    无控制台的 GUI 进程拉起该控制台子进程时会瞬时弹出一个 cmd 窗口。为所有子进程默认
+    叠加 `CREATE_NO_WINDOW`，既不弹窗也不影响其 stdout 捕获。仅在 Windows 冻结包生效。
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    import subprocess
+
+    _orig_init = subprocess.Popen.__init__
+
+    def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        _orig_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _patched_init  # type: ignore[method-assign]
+
+
 def _register_fonts() -> None:
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
@@ -110,6 +130,7 @@ def build_main_window(project_root: str | Path | None = None) -> MainWindow:
 
 
 def main() -> int:
+    _suppress_subprocess_console()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setWindowIcon(_app_icon())
     _register_fonts()
