@@ -64,15 +64,25 @@ def _app_icon() -> QIcon:
     return icon
 
 
+def _resolve_models_root() -> Path:
+    # Bundled models are added via PyInstaller --add-data (under _MEIPASS); in dev
+    # they live next to the source tree at the project root.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "models"
+    return Path(__file__).resolve().parents[1] / "models"
+
+
 def build_main_window(project_root: str | Path | None = None) -> MainWindow:
     root = Path(project_root) if project_root else Path.cwd()
+    models_root = Path(project_root) / "models" if project_root else _resolve_models_root()
     config_store = ConfigStore()
     config = config_store.load()
     log_store = LogStore()
 
     ocr_service = RoutingOCRService(
         local=PaddleOCRService(
-            models_root=root / "models",
+            models_root=models_root,
             runtime_options=PaddleOCRService.runtime_options_from_app_config(config),
         ),
         online=OnlineOCRService(

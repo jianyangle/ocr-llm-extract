@@ -1,10 +1,15 @@
 PySide6==6.8.1
 requests==2.32.3
-pydantic==2.10.6
 openpyxl==3.1.5
+numpy==2.4.6
+Pillow==12.2.0
+opencv-contrib-python==4.10.0.84
 paddlepaddle==3.0.0
 paddleocr==3.2.0
+pypdfium2==4.30.0
+# 约束传递依赖 chardet < 6：paddlex 默认拉取 chardet 7.x，超出 requests 的兼容上限
+# (requests 自检要求 chardet < 6.0.0)，否则启动时触发 RequestsDependencyWarning。
+chardet==5.2.0
 pytest==9.0.2
 pytest-cov==6.0.0
 pyinstaller==6.11.1
-pypdfium2==4.30.0

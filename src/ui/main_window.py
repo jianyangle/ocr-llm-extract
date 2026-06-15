@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRect, QThread, QSize, Qt, Signal, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -73,22 +73,32 @@ BOTTOM_STATUS_BAR_HEIGHT = 34
 
 def _resolve_default_excel_root() -> Path:
     # Frozen builds: PyInstaller's _MEIPASS would land us in a temp dir that gets cleaned up,
-    # so anchor the default Excel next to the executable instead.
+    # so anchor the writable default Excel next to the executable instead.
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
 
 
+def _resolve_resource_root() -> Path:
+    # Read-only bundled assets (icons) are added via PyInstaller --add-data, which
+    # lands them under _MEIPASS; in dev they sit at the project root.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(__file__).resolve().parents[2]
+
+
 _PROJECT_ROOT = _resolve_default_excel_root()
+_RESOURCE_ROOT = _resolve_resource_root()
 _DEFAULT_EXCEL_FALLBACK = str(_PROJECT_ROOT / DEFAULT_OUTPUT_FILENAME)
-_TASK_QUEUE_ICON_ROOT = _PROJECT_ROOT / "data" / "icon_1rfurz1zeyz"
+_TASK_QUEUE_ICON_ROOT = _RESOURCE_ROOT / "data" / "icon_1rfurz1zeyz"
 _TASK_QUEUE_PDF_COLLAPSED_ICON = _TASK_QUEUE_ICON_ROOT / "window-right.svg"
 _TASK_QUEUE_PDF_EXPANDED_ICON = _TASK_QUEUE_ICON_ROOT / "window-down.svg"
 _TASK_QUEUE_ACTION_PAUSE_ICON = _TASK_QUEUE_ICON_ROOT / "zanting.svg"
 _TASK_QUEUE_ACTION_RESUME_ICON = _TASK_QUEUE_ICON_ROOT / "jixu.svg"
 _TASK_QUEUE_ACTION_DELETE_ICON = _TASK_QUEUE_ICON_ROOT / "shanchu.svg"
-_ICONS_DIR = _PROJECT_ROOT / "data" / "icons"
-_TOOLBAR_ICON_DIR = _PROJECT_ROOT / "data" / "icons" / "toolbar"
+_ICONS_DIR = _RESOURCE_ROOT / "data" / "icons"
+_TOOLBAR_ICON_DIR = _RESOURCE_ROOT / "data" / "icons" / "toolbar"
 
 logger = logging.getLogger(__name__)
 
@@ -841,8 +851,16 @@ class MainWindow(QMainWindow):
         self.inspector_source_value.setWordWrap(True)
         self.inspector_source_value.setMinimumWidth(0)
         self.inspector_source_value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # The task id is a full UUID; like the source value it must not dictate the
+        # detail panel's minimum width. A single-line label keeps a minimumSizeHint
+        # as wide as the whole UUID, forcing the detail panel past its 40% share and
+        # collapsing the OCR text panel below its intended 60% (font-dependent, so it
+        # only surfaces under some fonts). wordWrap lets the label shrink at the
+        # hyphens so the 3:2 stretch holds.
+        self.inspector_task_id_value.setWordWrap(True)
+        self.inspector_task_id_value.setMinimumWidth(0)
+        self.inspector_task_id_value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         for value_label in (
-            self.inspector_task_id_value,
             self.inspector_status_value,
             self.inspector_error_value,
             self.inspector_retry_value,
@@ -998,8 +1016,11 @@ class MainWindow(QMainWindow):
         inspector_head_layout.addStretch(1)
         inspector_title = QLabel("详情")
         inspector_title.setObjectName("panelTitleLabel")
-        inspector_head_layout.addWidget(inspector_title, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
-        inspector_head_layout.addWidget(self.inspector_status_badge, alignment=Qt.AlignmentFlag.AlignTop)
+        # Center both on the row's vertical axis so they stay aligned regardless of
+        # font metrics: the badge's border makes it a few pixels taller than the plain
+        # title, so AlignTop would leave their centers offset by a font-dependent amount.
+        inspector_head_layout.addWidget(inspector_title, alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        inspector_head_layout.addWidget(self.inspector_status_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
         right_layout.addLayout(inspector_head_layout)
         inspector_layout = QHBoxLayout(self.inspector_content)
         inspector_layout.setContentsMargins(0, 0, 0, 0)
@@ -1342,14 +1363,6 @@ class MainWindow(QMainWindow):
         self._end_resize()
         super().mouseReleaseEvent(event)
 
-    @staticmethod
-    def _point_from_win32_lparam(lparam: int) -> QPoint:
-        import ctypes
-
-        x = ctypes.c_short(lparam & 0xFFFF).value
-        y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
-        return QPoint(x, y)
-
     def _is_titlebar_caption_area(self, pos: QPoint) -> bool:
         titlebar_pos = self.title_bar.mapFrom(self, pos)
         if not self.title_bar.rect().contains(titlebar_pos):
@@ -1409,7 +1422,11 @@ class MainWindow(QMainWindow):
                     return True, 0
 
                 if msg.message == wm_nchittest:
-                    pos = self.mapFromGlobal(self._point_from_win32_lparam(msg.lParam))
+                    # lParam carries physical screen pixels; QCursor.pos() is in Qt's
+                    # logical (device-independent) coordinates, the pair mapFromGlobal
+                    # expects. Decoding lParam directly breaks on scaled monitors
+                    # (DPR != 1), misclassifying the caption area as a resize edge.
+                    pos = self.mapFromGlobal(QCursor.pos())
                     return True, self._win32_hit_test_result(pos)
             except Exception:
                 pass

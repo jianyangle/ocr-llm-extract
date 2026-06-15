@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -61,6 +62,15 @@ from src.ocr.online_connection_check import check_online_ocr_connection
 from src.ui.icon_loader import load_icon
 from src.ui.settings_validation import SettingsFormData, build_validated_config
 from src.ui.theme import COLORS, generate_settings_qss
+
+
+def _assets_dir() -> Path:
+    # Frozen builds add src/ui/assets via PyInstaller --add-data, landing it under
+    # _MEIPASS; in dev it sits next to this module. Mirrors icon_loader/theme.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "src" / "ui" / "assets"
+    return Path(__file__).resolve().parent / "assets"
 
 
 class _ConnectionCheckSignals(QObject):
@@ -941,11 +951,11 @@ class SettingsDialog(QDialog):
     def _provider_icon(self, logo_asset: str) -> QIcon:
         if not logo_asset:
             return QIcon()
-        path = Path(__file__).resolve().parent / "assets" / logo_asset
+        path = _assets_dir() / logo_asset
         return QIcon(str(path)) if path.exists() else QIcon()
 
     def _external_link_icon(self) -> QIcon:
-        path = Path(__file__).resolve().parent / "assets" / "icons" / "external-link.svg"
+        path = _assets_dir() / "icons" / "external-link.svg"
         return QIcon(str(path)) if path.exists() else QIcon()
 
     def _set_provider_logo(self, logo_asset: str) -> None:
