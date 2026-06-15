@@ -158,7 +158,7 @@ data/icons/           # 界面图标
 
 > 本节是 Windows PyInstaller 打包参考，不属于 Linux/Windows 源码运行兼容验收。源码运行请按"快速开始"中的 Linux / WSL 或 Windows PowerShell 命令执行。
 
-Windows 打包（PyInstaller）：
+Windows 打包（PyInstaller，要求 **≥ 6.14**；低版本 + numpy 2.4 会在导入期报 `cannot load module more than once per process`）：
 
 ```bash
 pyinstaller --noconfirm --windowed --name OCRExtract \
@@ -166,6 +166,13 @@ pyinstaller --noconfirm --windowed --name OCRExtract \
   --collect-all paddle \
   --collect-all paddleocr \
   --collect-all paddlex \
+  --copy-metadata paddlex \
+  --copy-metadata paddleocr \
+  --copy-metadata imagesize \
+  --copy-metadata opencv-contrib-python \
+  --copy-metadata pyclipper \
+  --copy-metadata pypdfium2 \
+  --copy-metadata shapely \
   --add-data "models/PP-OCRv5_mobile_det;models/PP-OCRv5_mobile_det" \
   --add-data "models/PP-OCRv5_mobile_rec;models/PP-OCRv5_mobile_rec" \
   --add-data "models/PP-LCNet_x1_0_textline_ori;models/PP-LCNet_x1_0_textline_ori" \

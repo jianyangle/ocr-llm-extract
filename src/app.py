@@ -119,4 +119,22 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        # 冻结包（windowed）无控制台，启动期异常只会弹出难懂的对话框；
+        # 把完整 traceback 落盘到 exe 同级目录，便于排查。
+        if getattr(sys, "frozen", False):
+            import traceback
+
+            crash_log = Path(sys.executable).parent / "startup_crash.log"
+            try:
+                crash_log.write_text(traceback.format_exc(), encoding="utf-8")
+            except Exception:
+                pass
+        raise

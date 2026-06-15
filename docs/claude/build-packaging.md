@@ -12,6 +12,13 @@ pyinstaller --noconfirm --windowed --name OCRExtract \
   --collect-all paddle \
   --collect-all paddleocr \
   --collect-all paddlex \
+  --copy-metadata paddlex \
+  --copy-metadata paddleocr \
+  --copy-metadata imagesize \
+  --copy-metadata opencv-contrib-python \
+  --copy-metadata pyclipper \
+  --copy-metadata pypdfium2 \
+  --copy-metadata shapely \
   --add-data "models/PP-OCRv5_mobile_det;models/PP-OCRv5_mobile_det" \
   --add-data "models/PP-OCRv5_mobile_rec;models/PP-OCRv5_mobile_rec" \
   --add-data "models/PP-LCNet_x1_0_textline_ori;models/PP-LCNet_x1_0_textline_ori" \
@@ -25,7 +32,9 @@ pyinstaller --noconfirm --windowed --name OCRExtract \
 ```
 
 说明：
+- PyInstaller 版本要求 **≥ 6.14**（numpy hook 自 6.14.1 起兼容 numpy 2.3+）。低于此版本 + numpy 2.4 会在导入期报 `ImportError: cannot load module more than once per process`（`numpy._core._multiarray_umath` 被重复加载）。本项目实测使用 6.21.0。
 - `--collect-all paddle/paddleocr/paddlex`：收集 Paddle 系列的原生库、数据文件与隐藏依赖，缺失会导致冻结包运行 OCR 时崩溃。
+- `--copy-metadata paddlex/paddleocr/imagesize/opencv-contrib-python/pyclipper/pypdfium2/shapely`：PaddleX 在创建 OCR pipeline 时通过 `importlib.metadata` 校验 `ocr-core` 依赖（`require_extra("ocr", alt="ocr-core")`）。冻结包默认不含这些依赖的 `.dist-info` 元数据，会使 `importlib.metadata.version()` 返回 `None` 并抛 `DependencyError: \`OCR\` requires additional dependencies`（被包成 `E_OCR_002: Failed to load PaddleOCR models`）。`ocr-core` 依赖 = `imagesize / opencv-contrib-python / pyclipper / pypdfium2 / shapely`。
 - `data/fonts`、`data/icons`、`data/icon_1rfurz1zeyz`：运行时从 `_MEIPASS/data/...` 读取的字体与工具栏/任务队列图标，缺失会导致字体回退、图标空白。
 - `src/ui/assets/icons`：SVG 控件图标 + 多尺寸 app_icon PNG（窗口图标）。
 - `src/ui/assets/providers`：设置面板按 provider 加载的 LLM logo（`settings_dialog.py` 运行时读取），缺失会导致各 provider logo 空白。

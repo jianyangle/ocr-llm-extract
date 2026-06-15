@@ -12,4 +12,6 @@ pypdfium2==4.30.0
 chardet==5.2.0
 pytest==9.0.2
 pytest-cov==6.0.0
-pyinstaller==6.11.1
+# PyInstaller ≥ 6.14：numpy hook 自 6.14.1 起兼容 numpy 2.3+；
+# 6.11.x + numpy 2.4 会在冻结包导入期报 "cannot load module more than once per process"。
+pyinstaller==6.21.0
