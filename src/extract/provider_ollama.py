@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Callable
 
 from .errors import ExtractServiceError
 from .ollama_url import normalize_ollama_base_url
 
 OLLAMA_MAX_WORKERS = 1
+
+
+def _sanitize_schema_for_ollama(node: Any) -> Any:
+    """剥离 ollama schema->grammar 转换器不支持的构造。
+
+    ollama 对布尔形式的 `items`（如 `items: false`，JSON Schema 2020-12 用来禁止
+    超出 prefixItems 的额外数组元素）会返回 HTTP 500 {"error":"invalid JSON schema
+    in format"}，进而触发 E_LLM_006。由于同级的 maxItems/prefixItems 已锁死数组长度，
+    该约束是冗余的，发送前移除即可。返回深拷贝，不修改调用方共享的 schema。
+    """
+    if isinstance(node, dict):
+        return {
+            key: _sanitize_schema_for_ollama(value)
+            for key, value in node.items()
+            if not (key == "items" and isinstance(value, bool))
+        }
+    if isinstance(node, list):
+        return [_sanitize_schema_for_ollama(item) for item in node]
+    return deepcopy(node)
 
 
 class OllamaAdapter:
@@ -42,7 +62,7 @@ class OllamaAdapter:
         if num_ctx is not None:
             payload["options"]["num_ctx"] = int(num_ctx)
         if schema is not None:
-            payload["format"] = schema
+            payload["format"] = _sanitize_schema_for_ollama(schema)
         if thinking_disable_params:
             option_params = thinking_disable_params.get("options", {})
             if isinstance(option_params, dict):

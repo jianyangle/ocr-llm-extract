@@ -1108,10 +1108,11 @@ class TaskOrchestrator:
 
                     extraction_input, ocr_confidence = _extract_item_text(item)
                     try:
-                        outcome = self._extract_grounded_rows(
+                        outcome, extraction_input, ocr_confidence = self._extract_pdf_rows_with_ocr_fallback(
                             extractor=extractor,
-                            text=extraction_input,
+                            item=item,
                             config=config,
+                            extraction_input=extraction_input,
                             ocr_confidence=ocr_confidence,
                         )
                         grounded_rows = outcome.rows
@@ -1297,6 +1298,71 @@ class TaskOrchestrator:
             provider_cfg=config,
             ocr_confidence=ocr_confidence,
         )
+
+    def _extract_pdf_rows_with_ocr_fallback(
+        self,
+        *,
+        extractor: Extractor,
+        item: "_PipelineWorkItem",
+        config: AppConfig,
+        extraction_input: ExtractionInput,
+        ocr_confidence: float | None,
+    ) -> tuple[ExtractionOutcome, ExtractionInput, float | None]:
+        """先按原输入抽取；PDF 文本层页若得 0 行，则整页 OCR 重抽该页。
+
+        部分电子发票 PDF 的文本层顺序错乱，LLM 抽取结果在 strict/balanced grounding
+        下无法精确定位 → 0 行 → 全页 empty → E_PDF_005。OCR（视觉阅读顺序）能产出
+        可定位的行。仅在文本层路径产出 0 行时回退，保留文本层的速度优势；OCR 仍为空
+        或渲染/识别失败时，返回原始（空）结果，行为与未回退一致。
+        """
+        outcome = self._extract_grounded_rows(
+            extractor=extractor,
+            text=extraction_input,
+            config=config,
+            ocr_confidence=ocr_confidence,
+        )
+        if outcome.rows:
+            return outcome, extraction_input, ocr_confidence
+
+        snapshot = item.snapshot
+        if item.source_type != "pdf" or snapshot is None:
+            return outcome, extraction_input, ocr_confidence
+        if not str(getattr(snapshot, "source_path", "") or "").startswith("text_layer"):
+            return outcome, extraction_input, ocr_confidence
+
+        render_dpi = max(int(getattr(config, "pdf_render_dpi", 200)), 72)
+        try:
+            rendered = self._source_processor.pdf_adapter.render_page_image(
+                item.source_value, page_index=snapshot.page_index, render_dpi=render_dpi
+            )
+            try:
+                ocr_result = self._source_processor.ocr_service.recognize(rendered.image_path)
+            finally:
+                rendered.cleanup()
+        except Exception:
+            return outcome, extraction_input, ocr_confidence
+
+        ocr_text = str(getattr(ocr_result, "text", "") or "").strip()
+        if not ocr_text:
+            return outcome, extraction_input, ocr_confidence
+
+        fallback_input = ExtractionInput.from_text(ocr_text)
+        fallback_confidence = getattr(ocr_result, "confidence_avg", None)
+        fallback_outcome = self._extract_grounded_rows(
+            extractor=extractor,
+            text=fallback_input,
+            config=config,
+            ocr_confidence=fallback_confidence,
+        )
+        if not fallback_outcome.rows:
+            return outcome, extraction_input, ocr_confidence
+
+        # 回退命中：改写快照为 OCR 页，使后续归属/统计按 OCR 处理。
+        snapshot.normalized_text = ocr_text
+        snapshot.ocr_confidence = fallback_confidence
+        snapshot.blocks = list(getattr(ocr_result, "blocks", []) or [])
+        snapshot.source_path = "ocr"
+        return fallback_outcome, fallback_input, fallback_confidence
 
     def _maybe_rescue_uncertain_fields(
         self,
