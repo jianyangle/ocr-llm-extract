@@ -360,7 +360,7 @@ def _looks_like_object_rows(rows: list[object]) -> bool:
 
 
 def map_object_rows_to_arrays(rows: list[dict[str, object]], header: list[str]) -> list[list[object]]:
-    keys = [str(name) for name in header]
+    keys = [str(name).strip() for name in header]
     mapped: list[list[object]] = []
     for row in rows:
         if not isinstance(row, dict):

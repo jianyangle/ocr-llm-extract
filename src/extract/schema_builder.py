@@ -25,13 +25,13 @@ def build_rows_schema(
         object_row_schema = {
             "type": "object",
             "properties": {
-                str(header[index]): {
+                str(header[index]).strip(): {
                     "type": "string",
                     "description": _describe_column(header, columns, index),
                 }
                 for index in range(column_count)
             },
-            "required": [str(name) for name in header],
+            "required": [str(name).strip() for name in header],
             "additionalProperties": False,
         }
         return {
