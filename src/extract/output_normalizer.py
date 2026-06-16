@@ -357,3 +357,14 @@ def _looks_like_object_rows(rows: list[object]) -> bool:
     if not rows:
         return True
     return all(isinstance(row, dict) for row in rows)
+
+
+def map_object_rows_to_arrays(rows: list[dict[str, object]], header: list[str]) -> list[list[object]]:
+    keys = [str(name) for name in header]
+    mapped: list[list[object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            mapped.append([" "] * len(keys))
+            continue
+        mapped.append([row.get(key, " ") for key in keys])
+    return mapped
