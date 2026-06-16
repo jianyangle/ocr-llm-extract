@@ -92,6 +92,11 @@ build schema(对象键, 仅 ollama)
 a. `parse_object_rows_payload(raw_content, *, parse_mode) -> list[dict]`：
 - **复用**现有 `_build_parse_candidates`（去 `<think>` 标签、code fence 剥离、JSON 修复——这些对小模型很关键），仅替换最后的"行形状校验"：用新的 `_unwrap_object_rows` 取出 `rows` 并要求每行是 `dict`。
 - 不复用 `parse_rows_payload` 的 `_validate_rows`/`_looks_like_2d_rows`（那套要求每行是 list，会拒 dict）；也不给 `parse_rows_payload` 加 `row_format` 参数，避免污染数组路径的 `E_LLM_007` 语义。
+- 所有候选都解析失败 → **抛 `ExtractServiceError`**（`E_LLM_002`），不在函数内吞掉错误做 fallback。fallback 归调用方（见组件 4）。
+
+a'. 内部辅助 `_unwrap_object_rows(data) -> list[dict] | None`（与 `_unwrap_rows:271` 对称）：
+- 仅当 `data` 是 dict、含 `rows` 键、且 `rows` 是 list 且每个元素是 dict 时，返回该 list；否则返回 `None`（候选不匹配，继续试下一个候选）。
+- 顶层直接是对象数组（无 `rows` 包裹）时也接受：`data` 为 list 且每元素是 dict → 返回 `data`。
 
 b. `map_object_rows_to_arrays(rows: list[dict], header: list[str]) -> list[list[str]]`，纯函数：
 - 按 `header` 顺序取每个对象的键值。
@@ -104,6 +109,7 @@ b. `map_object_rows_to_arrays(rows: list[dict], header: list[str]) -> list[list[
 - 计算 `use_object_schema = provider_cfg.provider == "ollama" and provider_cfg.use_structured_output and <header 无重复列名>`。
 - `use_object_schema` 为真时用 `row_format="object"` 构建 schema，`schema_hint` 自动切换成对象 schema 文本。
 - 解析阶段：对象 schema 路径走 `parse_object_rows_payload` → `map_object_rows_to_arrays` → `normalize_rows`；数组路径保持走原 `parse_rows_payload`。
+- **fallback 控制流归 `_run_llm_grounded_extract`**：当用了对象 schema 但 `parse_object_rows_payload` 抛错（模型仍吐数组等），在此 `try/except` 捕获后改走 `parse_rows_payload`，不把 fallback 逻辑塞进解析器内部。
 - **不新增任何用户可见配置**，对小模型自动生效。
 
 ### 5. 格式 / 类型问题（吸收 B，限定力度）
