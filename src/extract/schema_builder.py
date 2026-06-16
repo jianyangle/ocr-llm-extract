@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from src.domain.schemas import ColumnSpec
 
 from .errors import ExtractServiceError
@@ -10,9 +12,38 @@ def build_rows_schema(
     *,
     header: list[str] | None = None,
     columns: tuple[ColumnSpec, ...] | None = None,
+    row_format: Literal["array", "object"] = "array",
 ) -> dict[str, object]:
     if column_count < 2:
         raise ExtractServiceError("E_PARSE_001", "examples must define at least 2 columns")
+
+    if row_format == "object":
+        if header is None:
+            raise ExtractServiceError("E_PARSE_001", "object row schema requires header")
+        if len(header) != column_count:
+            raise ExtractServiceError("E_PARSE_001", "examples header length does not match column count")
+        object_row_schema = {
+            "type": "object",
+            "properties": {
+                str(header[index]): {
+                    "type": "string",
+                    "description": _describe_column(header, columns, index),
+                }
+                for index in range(column_count)
+            },
+            "required": [str(name) for name in header],
+            "additionalProperties": False,
+        }
+        return {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": object_row_schema,
+                }
+            },
+            "required": ["rows"],
+        }
 
     row_schema = {
         "type": "array",
