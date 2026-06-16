@@ -318,7 +318,7 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
     return deduped
 
 
-def parse_object_rows_payload(raw_content: str, *, parse_mode: ParseMode = "balanced") -> list[dict]:
+def parse_object_rows_payload(raw_content: str, *, parse_mode: ParseMode = "balanced") -> list[dict[str, object]]:
     if not isinstance(raw_content, str) or not raw_content.strip():
         raise ExtractServiceError("E_LLM_002", "LLM response content is empty")
 
@@ -339,7 +339,7 @@ def parse_object_rows_payload(raw_content: str, *, parse_mode: ParseMode = "bala
     raise ExtractServiceError("E_LLM_002", "LLM response is not structured object rows")
 
 
-def _unwrap_object_rows(data: object) -> list[dict] | None:
+def _unwrap_object_rows(data: object) -> list[dict[str, object]] | None:
     if isinstance(data, list):
         if _looks_like_object_rows(data):
             return data
