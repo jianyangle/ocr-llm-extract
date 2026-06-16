@@ -11,7 +11,12 @@ from .chunker import split_markdown_passes, split_passes
 from .errors import ExtractServiceError
 from .field_types import email_equivalent, phone_equivalent
 from .grounding import ground_rows, normalize_value_for_dedupe
-from .output_normalizer import normalize_rows, parse_rows_payload
+from .output_normalizer import (
+    map_object_rows_to_arrays,
+    normalize_rows,
+    parse_object_rows_payload,
+    parse_rows_payload,
+)
 from .prompt_builder import PromptTemplate, build_messages
 from .provider_catalog import get_provider_entry
 from .provider_ollama import OllamaAdapter
@@ -252,19 +257,31 @@ class LLMExtractor:
         provider_cfg: AppConfig,
     ) -> list[GroundedExtractRow]:
         parse_mode = _resolve_parse_mode(provider_cfg)
+        header = template.examples[0]
         if source.has_markdown:
             pass_texts = split_markdown_passes(source.extraction_text, provider_cfg)
         else:
             pass_texts = _build_pass_texts(source.flat_text, provider_cfg, template=template)
-        schema = (
-            build_rows_schema(
+
+        use_object_schema = False
+        if getattr(provider_cfg, "provider", None) == "ollama" and provider_cfg.use_structured_output:
+            if _has_duplicate_columns(header):
+                _logger.warning(
+                    "Ollama object-schema disabled: duplicate column names in header; "
+                    "falling back to array schema"
+                )
+            else:
+                use_object_schema = True
+
+        if provider_cfg.use_structured_output:
+            schema = build_rows_schema(
                 expected_columns,
-                header=template.examples[0],
+                header=header,
                 columns=template.columns,
+                row_format="object" if use_object_schema else "array",
             )
-            if provider_cfg.use_structured_output
-            else None
-        )
+        else:
+            schema = None
         schema_hint = json.dumps(schema, ensure_ascii=False) if schema is not None else None
         messages_list = [
             build_messages(
@@ -285,10 +302,36 @@ class LLMExtractor:
 
         grounded_rows: list[GroundedExtractRow] = []
         for raw_content in raw_contents:
-            rows = parse_rows_payload(raw_content, parse_mode=parse_mode)
-            normalized = normalize_rows(rows, expected_columns=expected_columns)
+            normalized = self._parse_to_normalized_rows(
+                raw_content,
+                parse_mode=parse_mode,
+                expected_columns=expected_columns,
+                header=header,
+                use_object_schema=use_object_schema,
+            )
             grounded_rows.extend(ground_rows(normalized, source_text=source.flat_text, cfg=provider_cfg))
         return grounded_rows
+
+    def _parse_to_normalized_rows(
+        self,
+        raw_content: str,
+        *,
+        parse_mode: str,
+        expected_columns: int,
+        header: list[str],
+        use_object_schema: bool,
+    ) -> list[list[str]]:
+        if use_object_schema:
+            try:
+                object_rows = parse_object_rows_payload(raw_content, parse_mode=parse_mode)
+                mapped = map_object_rows_to_arrays(object_rows, header)
+                return normalize_rows(mapped, expected_columns=expected_columns)
+            except ExtractServiceError:
+                _logger.warning(
+                    "Ollama object-schema parse failed; falling back to array parsing"
+                )
+        rows = parse_rows_payload(raw_content, parse_mode=parse_mode)
+        return normalize_rows(rows, expected_columns=expected_columns)
 
 
 def _validate_examples(examples: list[list[str]]) -> int:
@@ -308,6 +351,11 @@ def _validate_examples(examples: list[list[str]]) -> int:
             raise ExtractServiceError("E_PARSE_001", "examples columns are inconsistent")
 
     return expected_columns
+
+
+def _has_duplicate_columns(header: list[str]) -> bool:
+    names = [str(name).strip() for name in header]
+    return len(names) != len(set(names))
 
 
 def _resolve_parse_mode(provider_cfg: AppConfig) -> str:
