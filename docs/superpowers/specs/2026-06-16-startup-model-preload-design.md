@@ -35,6 +35,7 @@ UPX、Windows Defender、PySide6 import 均被 0.74s vs 8.11s 的悬殊证伪为
 - 不优化 UPX / Defender / import（已证伪为次要）。
 - 不改在线 OCR 路径。
 - 不引入模型加载进度条（仅"加载中/就绪/失败"三态）。
+- **不监听运行时「在线 → 本地」切换并重新预热**：预热只在窗口首显触发一次。若启动时为在线（跳过预热），之后在设置里切到本地，`reset_runtime` 仅更新 `_use_online`（`routing_service.py:88`）、清空引擎，不重新触发预热；首次本地识别由 `_recognize_locked` → `_ensure_engine_locked` 现场懒建兜底（功能正确，仅无预热加速）。此为有意取舍。
 
 ## 设计
 
@@ -59,7 +60,8 @@ UPX、Windows Defender、PySide6 import 均被 0.74s vs 8.11s 的悬殊证伪为
 
 ### D. `main_window.py`：后台 worker + 独立指示器
 
-- **独立指示器**：在 `status_bar_layout`（line 1088）右侧新增一个独立 `QLabel`（状态点 + 文字「本地模型加载中…」），默认 `hidden`，与 `_set_status` 的主状态文字解耦，互不覆盖。
+- **独立指示器**：在 `status_bar_layout`（line 1088）右侧新增一个独立 `QLabel`（状态点 + 文字「本地模型加载中…」），默认 `hidden`，与 `_set_status` 的主状态文字解耦，互不覆盖。指示器使用自有的小状态点/QLabel，**不复用** `status_dot`/`status_label`。
+- **获取 `ocr_service`**：MainWindow 持有的是 `self.controller`，可达路径为 `self.controller.engine.ocr_service`（对照 `main_window.py:1827` 既有写法）。取值须用 `getattr` 防御降级：`engine` 或 `ocr_service` 缺失（如注入 stub controller 的测试）时跳过预热、不崩溃。
 - **PreloadWorker(QObject)**：`run()` 调 `ocr_service.maybe_preload_local()`；成功发 `finished`，异常发 `failed(str)`（捕获 `OCRServiceError`/通用异常，绝不让后台线程崩溃进程）。
 - **触发**：窗口显示后启动一次（`QTimer.singleShot(0, ...)` 或 `showEvent` 首次），复用现有 `QThread + moveToThread` 范式（参照识别 worker，line 1627-1629）。
   - 启动即显示指示器（脉冲态）；`finished` → 隐藏指示器；`failed` → 指示器转红 +「本地模型加载失败」。
