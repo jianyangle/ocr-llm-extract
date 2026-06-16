@@ -1,6 +1,6 @@
 # 本地 OCR 模型后台预热 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **致执行代理：** 必需子技能（REQUIRED SUB-SKILL）：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐步实现本计划。步骤使用复选框（`- [ ]`）语法跟踪进度。
 
 **Goal:** 让打包后「双击 exe → 主窗口出现」从 ~7.25s 降到秒级——把 PaddleOCR 引擎从「构造即加载」改为「懒加载 + 进界面后台预热」，并在状态栏加独立「本地模型加载中」提示。
 
@@ -111,6 +111,53 @@ def test_reset_runtime_clears_engine_for_lazy_rebuild(tmp_path: Path) -> None:
     service.recognize(str(image_path))
 
     assert counter["n"] == 2  # reset 后引擎置空，下次识别重建
+
+
+def test_concurrent_preload_and_recognize_build_engine_once(tmp_path: Path) -> None:
+    """并发约束：preload 持锁加载期间，recognize 阻塞至加载完成，且引擎只建一次。"""
+    import threading
+
+    models_root = _create_model_tree(tmp_path / "models")
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"png")
+
+    counter = {"n": 0}
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+
+    def _blocking_factory(**_kwargs):
+        counter["n"] += 1  # 仅在持锁的 _create_engine 内执行，无计数竞态
+        factory_entered.set()
+        release_factory.wait(5)
+
+        def _engine(_image_path: str):
+            return []
+
+        return _engine
+
+    service = PaddleOCRService(models_root=models_root, engine_factory=_blocking_factory)
+
+    preload_thread = threading.Thread(target=service.preload)
+    preload_thread.start()
+    assert factory_entered.wait(5)  # preload 已进入 _create_engine 并持有 _recognize_lock
+
+    recognize_done = threading.Event()
+
+    def _recognize() -> None:
+        service.recognize(str(image_path))
+        recognize_done.set()
+
+    recognize_thread = threading.Thread(target=_recognize)
+    recognize_thread.start()
+    # preload 仍持锁，recognize 必须阻塞在 _recognize_lock 上
+    assert not recognize_done.wait(0.3)
+
+    release_factory.set()
+    preload_thread.join(5)
+    recognize_thread.join(5)
+
+    assert recognize_done.is_set()
+    assert counter["n"] == 1  # 并发下引擎只构建一次
 ```
 
 并把现有 2 个依赖「构造即加载」的用例迁移。将 `tests/test_ocr_paddle_service.py:50-81` 这两个函数：
@@ -178,9 +225,12 @@ def test_preload_uses_local_model_paths_and_disables_download(tmp_path: Path) ->
     service.preload()
 
     assert Path(str(captured["det_model_dir"])) == models_root / MODEL_DIRS["det"]
+    assert Path(str(captured["rec_model_dir"])) == models_root / MODEL_DIRS["rec"]
+    assert Path(str(captured["ori_model_dir"])) == models_root / MODEL_DIRS["ori"]
+    assert Path(str(captured["doc_ori_model_dir"])) == models_root / MODEL_DIRS["doc_ori"]
+    assert Path(str(captured["unwarp_model_dir"])) == models_root / MODEL_DIRS["unwarp"]
+    assert captured["download_enabled"] is False
 ```
-
-> 注意：迁移时保留原 `test_init_uses_local_model_paths_and_disables_download` 函数体里 `rec/ori/doc_ori/unwarp/download_enabled` 那几行断言（第 77-81 行），原样跟在 `det_model_dir` 断言之后，仅函数名与首部 `PaddleOCRService(...)` → `service = PaddleOCRService(...)` + `service.preload()` 改动。
 
 - [ ] **Step 2: 运行新测试，确认按预期失败**
 
@@ -679,7 +729,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 | 独立指示器（不复用 status_dot/label） | Task 3 Step 6-7 |
 | `controller.engine.ocr_service` + getattr 降级 | Task 3 Step 8 |
 | 关闭清理 | Task 3 Step 9 |
-| 测试：构造不加载/幂等/并发只一次/reset 重建/条件预热 | Task 1 Step 1、Task 2 Step 1 |
+| 测试：构造不加载/幂等/reset 重建/条件预热 | Task 1 Step 1、Task 2 Step 1 |
+| 测试：并发持锁阻塞 + 只加载一次（spec line 94） | Task 1 Step 1 `test_concurrent_preload_and_recognize_build_engine_once` |
 
 无遗漏。运行时「在线→本地」切换不重新预热为 spec 明示的非目标，无需 Task。
 
