@@ -316,3 +316,44 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
         seen.add(value)
         deduped.append(value)
     return deduped
+
+
+def parse_object_rows_payload(raw_content: str, *, parse_mode: ParseMode = "balanced") -> list[dict]:
+    if not isinstance(raw_content, str) or not raw_content.strip():
+        raise ExtractServiceError("E_LLM_002", "LLM response content is empty")
+
+    cleaned = _THINK_TAG_RE.sub("", raw_content)
+    if not cleaned.strip():
+        raise ExtractServiceError("E_LLM_002", "LLM response content is empty")
+
+    candidates = _build_parse_candidates(cleaned, parse_mode=parse_mode)
+    for candidate in candidates:
+        data = _try_parse_json(candidate)
+        if data is None:
+            continue
+        rows = _unwrap_object_rows(data)
+        if rows is None:
+            continue
+        return rows
+
+    raise ExtractServiceError("E_LLM_002", "LLM response is not structured object rows")
+
+
+def _unwrap_object_rows(data: object) -> list[dict] | None:
+    if isinstance(data, list):
+        if _looks_like_object_rows(data):
+            return data
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    value = data.get("rows")
+    if isinstance(value, list) and _looks_like_object_rows(value):
+        return value
+    return None
+
+
+def _looks_like_object_rows(rows: list[object]) -> bool:
+    if not rows:
+        return True
+    return all(isinstance(row, dict) for row in rows)
