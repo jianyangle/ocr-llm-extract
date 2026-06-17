@@ -1,6 +1,6 @@
 # 本地 OCR 模型后台预热 Implementation Plan
 
-> **致执行代理：** 必需子技能（REQUIRED SUB-SKILL）：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐步实现本计划。步骤使用复选框（`- [ ]`）语法跟踪进度。
+> **致执行代理：** 必需子技能（REQUIRED SUB-SKILL）：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐步实现本计划。步骤使用复选框（`- [x]`）语法跟踪进度。
 
 **Goal:** 让打包后「双击 exe → 主窗口出现」从 ~7.25s 降到秒级——把 PaddleOCR 引擎从「构造即加载」改为「懒加载 + 进界面后台预热」，并在状态栏加独立「本地模型加载中」提示。
 
@@ -33,7 +33,7 @@
 - Modify: `tests/test_ocr_paddle_service.py:50-81`（迁移 2 个用例）
 - Test: `tests/test_ocr_paddle_service.py`（新增用例）
 
-- [ ] **Step 1: 写失败测试 —— 构造不加载引擎 / preload 幂等 / reset 置空 / 懒建**
+- [x] **Step 1: 写失败测试 —— 构造不加载引擎 / preload 幂等 / reset 置空 / 懒建**
 
 在 `tests/test_ocr_paddle_service.py` 末尾追加（顶部已 `from pathlib import Path`、`import pytest`、`from src.ocr.paddle_service import PaddleOCRService`、`from src.ocr.errors import OCRServiceError`、`MODEL_DIRS` 与 `_create_model_tree` 均已存在）：
 
@@ -232,12 +232,12 @@ def test_preload_uses_local_model_paths_and_disables_download(tmp_path: Path) ->
     assert captured["download_enabled"] is False
 ```
 
-- [ ] **Step 2: 运行新测试，确认按预期失败**
+- [x] **Step 2: 运行新测试，确认按预期失败**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ocr_paddle_service.py::test_construction_does_not_build_engine tests/test_ocr_paddle_service.py::test_preload_builds_engine_once_and_is_idempotent -v`
 Expected: FAIL —— `AttributeError: 'PaddleOCRService' object has no attribute 'preload'`；`test_construction_does_not_build_engine` 因当前构造期即调用 factory 而 `counter["n"] == 1` 断言失败。
 
-- [ ] **Step 3: 改 `__init__` 为懒加载**
+- [x] **Step 3: 改 `__init__` 为懒加载**
 
 将 `src/ocr/paddle_service.py:88-94`：
 
@@ -263,7 +263,7 @@ Expected: FAIL —— `AttributeError: 'PaddleOCRService' object has no attribut
         self._retry_engine_cache: dict[OCRRuntimeOptions, Callable[[str], Any]] = {}
 ```
 
-- [ ] **Step 4: 新增 `preload()` 与 `_ensure_engine_locked()`**
+- [x] **Step 4: 新增 `preload()` 与 `_ensure_engine_locked()`**
 
 在 `update_runtime_options`（当前 `src/ocr/paddle_service.py:96`）之前插入：
 
@@ -280,7 +280,7 @@ Expected: FAIL —— `AttributeError: 'PaddleOCRService' object has no attribut
         return self._engine
 ```
 
-- [ ] **Step 5: `_reset_runtime_locked` 改置空（惰性重建）**
+- [x] **Step 5: `_reset_runtime_locked` 改置空（惰性重建）**
 
 将 `src/ocr/paddle_service.py:104-107`：
 
@@ -300,7 +300,7 @@ Expected: FAIL —— `AttributeError: 'PaddleOCRService' object has no attribut
         self._retry_engine_cache.clear()
 ```
 
-- [ ] **Step 6: `_recognize_locked` 起始处兜底懒建**
+- [x] **Step 6: `_recognize_locked` 起始处兜底懒建**
 
 在 `src/ocr/paddle_service.py:178`（`raise OCRServiceError("E_OCR_003", ...)` 那行之后、`offset = (0, 0)` 之前）插入一行，使无效图片仍先于建引擎被拒、有效图片在使用引擎前确保已建：
 
@@ -314,12 +314,12 @@ Expected: FAIL —— `AttributeError: 'PaddleOCRService' object has no attribut
 
 > `_recognize_locked` 由 `recognize`（`src/ocr/paddle_service.py:166-167`）在持锁状态下调用，满足 `_ensure_engine_locked` 的持锁约定。后续 `self._engine`（line 194）与 `_get_retry_engine`（line 346 `return self._engine`）此时均非 None。
 
-- [ ] **Step 7: 运行 paddle_service 全量测试，确认通过**
+- [x] **Step 7: 运行 paddle_service 全量测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ocr_paddle_service.py -v`
 Expected: PASS（含新增 5 个用例与迁移后的 2 个用例；其余走 `recognize` 的旧用例不受影响）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/ocr/paddle_service.py tests/test_ocr_paddle_service.py
@@ -337,7 +337,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `tests/test_ocr_routing_service.py:16-41`（`_RecordingService` 加 `preload`）
 - Test: `tests/test_ocr_routing_service.py`（新增 2 用例）
 
-- [ ] **Step 1: 写失败测试 —— 仅本地时预热**
+- [x] **Step 1: 写失败测试 —— 仅本地时预热**
 
 在 `tests/test_ocr_routing_service.py` 的 `_RecordingService`（line 16-41）中新增 `preload` 计数。把 `recognize_calls: list[...]` 等字段区追加一行，并加方法：
 
@@ -378,12 +378,12 @@ def test_maybe_preload_local_skips_when_online() -> None:
     assert local.preload_calls == 0
 ```
 
-- [ ] **Step 2: 运行，确认失败**
+- [x] **Step 2: 运行，确认失败**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ocr_routing_service.py::test_maybe_preload_local_preloads_when_offline -v`
 Expected: FAIL —— `AttributeError: 'RoutingOCRService' object has no attribute 'maybe_preload_local'`。
 
-- [ ] **Step 3: 实现 `maybe_preload_local`**
+- [x] **Step 3: 实现 `maybe_preload_local`**
 
 在 `src/ocr/routing_service.py` 的 `recognize` 方法（line 45）之前插入：
 
@@ -394,12 +394,12 @@ Expected: FAIL —— `AttributeError: 'RoutingOCRService' object has no attribu
             self._local.preload()
 ```
 
-- [ ] **Step 4: 运行，确认通过**
+- [x] **Step 4: 运行，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ocr_routing_service.py -v`
 Expected: PASS（含新增 2 用例；既有路由用例不受影响）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr/routing_service.py tests/test_ocr_routing_service.py
@@ -416,7 +416,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `src/ui/main_window.py`（新增 `_ModelPreloadWorker` 类；`_create_widgets` 区加指示器；`status_bar_layout` 区挂指示器；新增 `start_model_preload` + 槽 + 关闭清理；`__init__` 线程引用初始化；`closeEvent` 调清理）
 - Test: `tests/test_ui_model_preload.py`（新建）
 
-- [ ] **Step 1: 写失败测试 —— worker 同步行为**
+- [x] **Step 1: 写失败测试 —— worker 同步行为**
 
 新建 `tests/test_ui_model_preload.py`：
 
@@ -476,12 +476,12 @@ def test_worker_emits_failed_on_exception() -> None:
     assert events == [("failed", "boom")]
 ```
 
-- [ ] **Step 2: 运行，确认失败**
+- [x] **Step 2: 运行，确认失败**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ui_model_preload.py -v`
 Expected: FAIL —— `ImportError: cannot import name '_ModelPreloadWorker' from 'src.ui.main_window'`。
 
-- [ ] **Step 3: 新增 `_ModelPreloadWorker` 类**
+- [x] **Step 3: 新增 `_ModelPreloadWorker` 类**
 
 在 `src/ui/main_window.py` 的 `_RecognitionWorker` 类定义（结束于 line 478 `self.engine_event.emit(event)`）之后、`class _TitleBarControlButton`（line 481）之前插入：
 
@@ -504,12 +504,12 @@ class _ModelPreloadWorker(QObject):
             self.failed.emit(str(exc))
 ```
 
-- [ ] **Step 4: 运行 worker 测试，确认通过**
+- [x] **Step 4: 运行 worker 测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ui_model_preload.py -v`
 Expected: PASS（2 用例）。
 
-- [ ] **Step 5: `__init__` 初始化预热线程引用**
+- [x] **Step 5: `__init__` 初始化预热线程引用**
 
 在 `src/ui/main_window.py:699-700`：
 
@@ -525,7 +525,7 @@ Expected: PASS（2 用例）。
         self._model_preload_worker: _ModelPreloadWorker | None = None
 ```
 
-- [ ] **Step 6: 创建独立指示器 widget（默认隐藏）**
+- [x] **Step 6: 创建独立指示器 widget（默认隐藏）**
 
 在 `src/ui/main_window.py:887-891` 状态栏 widget 创建区：
 
@@ -554,7 +554,7 @@ Expected: PASS（2 用例）。
         self.model_preload_indicator.setVisible(False)
 ```
 
-- [ ] **Step 7: 把指示器挂到状态栏右侧**
+- [x] **Step 7: 把指示器挂到状态栏右侧**
 
 在 `src/ui/main_window.py:1094`：
 
@@ -568,7 +568,7 @@ Expected: PASS（2 用例）。
         status_bar_layout.addWidget(self.model_preload_indicator)
 ```
 
-- [ ] **Step 8: 新增 `start_model_preload` + 完成/失败/线程结束槽**
+- [x] **Step 8: 新增 `start_model_preload` + 完成/失败/线程结束槽**
 
 在 `src/ui/main_window.py` 的 `_start_recognition_in_background`（line 1626-1642）之后、`_on_recognition_thread_finished`（line 1644）之前插入：
 
@@ -611,7 +611,7 @@ Expected: PASS（2 用例）。
         self._model_preload_thread = None
 ```
 
-- [ ] **Step 9: 关闭时清理预热线程**
+- [x] **Step 9: 关闭时清理预热线程**
 
 在 `src/ui/main_window.py` 的 `closeEvent`（line 1648-1652）中，`self._shutdown_recognition()` 之后追加一行：
 
@@ -637,12 +637,12 @@ Expected: PASS（2 用例）。
         thread.wait(15000)
 ```
 
-- [ ] **Step 10: 运行 UI worker 测试 + paddle/routing 回归**
+- [x] **Step 10: 运行 UI worker 测试 + paddle/routing 回归**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_ui_model_preload.py tests/test_ocr_paddle_service.py tests/test_ocr_routing_service.py -v`
 Expected: PASS。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/ui/main_window.py tests/test_ui_model_preload.py
@@ -658,7 +658,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/app.py:132-139`（`main`）
 
-- [ ] **Step 1: 在 `window.show()` 后触发预热**
+- [x] **Step 1: 在 `window.show()` 后触发预热**
 
 将 `src/app.py:132-139`：
 
@@ -687,22 +687,22 @@ def main() -> int:
     return app.exec()
 ```
 
-- [ ] **Step 2: 全量测试回归**
+- [x] **Step 2: 全量测试回归**
 
 Run: `.venv/Scripts/python.exe -m pytest`
 Expected: PASS（全部用例；尤其 `tests/test_ocr_paddle_service.py`、`tests/test_ocr_routing_service.py`、`tests/test_ui_model_preload.py`、`tests/test_ui_qt_main_window.py`）。
 
-- [ ] **Step 3: 源码态 smoke 验证窗口秒开**
+- [x] **Step 3: 源码态 smoke 验证窗口秒开**
 
 Run: `.venv/Scripts/python.exe -c "import time,sys; sys.argv=['app']; from PySide6.QtWidgets import QApplication; t=time.perf_counter(); from src.app import build_main_window; app=QApplication.instance() or QApplication(sys.argv); w=build_main_window(); print(f'build_main_window: {(time.perf_counter()-t)*1000:.0f} ms'); w.start_model_preload(); print('preload kicked off (background)')"`
 Expected: `build_main_window` 从原 ~8000ms 降到数百 ms（不再打印 `Creating model: ...`，因构造期不再加载）；预热在后台进行。
 
-- [ ] **Step 4: 人工运行 app 验证指示器（windowed 行为）**
+- [ ] **Step 4: 人工运行 app 验证指示器（windowed 行为）** —— 待人工确认；自动化部分（offscreen smoke + worker 单测 + 全量套件）已覆盖，windowed 指示器视觉表现需人工运行 `python src/app.py` 确认
 
 Run: `.venv/Scripts/python.exe src/app.py`
 Expected：窗口立即出现（秒级），状态栏右侧短暂显示「● 本地模型加载中…」脉冲提示，约数秒后消失；随后点击一张图片识别能正常返回（引擎已预热或懒建兜底）。在设置里将 OCR 切到「在线」并重启，应不出现该提示。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app.py
