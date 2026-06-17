@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import threading
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +13,44 @@ from typing import Any, Callable, Mapping
 from .errors import OCRServiceError
 from .models import OCRResult, OCRTextBlock
 from .tbpu import get_parser
+
+
+@contextlib.contextmanager
+def _suppress_ccache_probe_noise():
+    """静音 Paddle 首次创建模型时的 ccache 探测噪音。
+
+    根因：``paddle.utils.cpp_extension.extension_utils.find_ccache_home()`` 在
+    Windows 上通过子进程 ``where ccache`` 探测 ccache 路径，但未重定向子进程
+    stderr（同文件的 ``find_cuda_home()`` 则正确地传了 ``stderr=devnull``）。
+    在中文 Windows 上 ``where`` 找不到时会把本地化提示
+    “信息: 用提供的模式无法找到文件。” 写到 stderr 泄漏到控制台，并伴随一条
+    “No ccache found” 的 ``UserWarning``。
+
+    ccache 仅用于重新编译自定义算子，纯 OCR 推理不需要，因此这两条输出都是无害
+    噪音，这里一并静音。子进程输出必须在 OS fd 层重定向（``contextlib.redirect_stderr``
+    只替换 Python 的 ``sys.stderr``，对子进程继承的真实 fd 2 无效）。
+    """
+    saved_fd = None
+    devnull_fd = None
+    try:
+        try:
+            saved_fd = os.dup(2)
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull_fd, 2)
+        except (OSError, ValueError):
+            # stderr fd 不可用（如 PyInstaller windowed 模式），本就无控制台噪音可静音
+            pass
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="No ccache found.*")
+            yield
+    finally:
+        if saved_fd is not None:
+            try:
+                os.dup2(saved_fd, 2)
+            finally:
+                os.close(saved_fd)
+        if devnull_fd is not None:
+            os.close(devnull_fd)
 
 
 MODEL_DIRS = {
@@ -90,8 +131,19 @@ class PaddleOCRService:
         self._engine_factory = engine_factory or self._default_engine_factory
         self._recognize_lock = threading.Lock()
         self._runtime_options = self._normalize_runtime_options(runtime_options)
-        self._engine = self._create_engine(self._runtime_options)
+        self._engine: Callable[[str], Any] | None = None
         self._retry_engine_cache: dict[OCRRuntimeOptions, Callable[[str], Any]] = {}
+
+    def preload(self) -> None:
+        """提前构建 OCR 引擎，使首次识别免于现场加载。幂等；供后台线程调用。"""
+        with self._recognize_lock:
+            self._ensure_engine_locked()
+
+    def _ensure_engine_locked(self) -> Callable[[str], Any]:
+        """懒建引擎。调用方必须已持有 ``self._recognize_lock``。"""
+        if self._engine is None:
+            self._engine = self._create_engine(self._runtime_options)
+        return self._engine
 
     def update_runtime_options(self, runtime_options: OCRRuntimeOptions | Mapping[str, Any]) -> None:
         with self._recognize_lock:
@@ -103,7 +155,7 @@ class PaddleOCRService:
 
     def _reset_runtime_locked(self, runtime_options: OCRRuntimeOptions | Mapping[str, Any]) -> None:
         self._runtime_options = self._normalize_runtime_options(runtime_options)
-        self._engine = self._create_engine(self._runtime_options)
+        self._engine = None
         self._retry_engine_cache.clear()
 
     @classmethod
@@ -176,6 +228,8 @@ class PaddleOCRService:
         image = Path(image_path)
         if not image.exists() or not image.is_file() or image.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
             raise OCRServiceError("E_OCR_003", "Invalid image path or unsupported image type")
+
+        self._ensure_engine_locked()
 
         offset = (0, 0)
         max_side_limit = self._effective_preprocess_max_side_limit(self._runtime_options.image_max_side_limit)
@@ -723,7 +777,8 @@ class PaddleOCRService:
             raise OCRServiceError("E_OCR_002", "Failed to inspect PaddleOCR API signature") from exc
 
         try:
-            engine = PaddleOCR(**kwargs)
+            with _suppress_ccache_probe_noise():
+                engine = PaddleOCR(**kwargs)
         except Exception as exc:
             raise OCRServiceError("E_OCR_002", "Failed to load PaddleOCR models") from exc
 
