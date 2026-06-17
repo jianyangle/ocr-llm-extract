@@ -187,6 +187,8 @@ class ConfigStore:
             llm_prompt_cache_enabled=_coerce_bool(data.get("llm_prompt_cache_enabled"), fallback=False),
             allow_thinking=_coerce_bool(data.get("allow_thinking"), fallback=False),
             ollama_num_ctx=_coerce_positive_int(data.get("ollama_num_ctx"), fallback=8192),
+            ollama_overrides=_coerce_ollama_overrides(data.get("ollama_overrides")),
+            extraction_system_prompt=str(data.get("extraction_system_prompt", "") or ""),
             grounding_fuzzy_threshold=_coerce_grounding_fuzzy_threshold(
                 data.get("grounding_fuzzy_threshold"),
                 fallback=0.75,
@@ -254,6 +256,12 @@ class ConfigStore:
 
 def mask_api_key(value: str) -> str:
     return "****" if value else ""
+
+
+def _coerce_ollama_overrides(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): v for k, v in value.items()}
 
 
 def _default_provider_profiles() -> dict[str, dict[str, str]]:
