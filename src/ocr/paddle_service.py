@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import threading
@@ -57,6 +58,20 @@ def _suppress_ccache_probe_noise():
                 os.close(saved_fd)
         if devnull_fd is not None:
             os.close(devnull_fd)
+
+
+def _silence_paddle_loggers() -> None:
+    """将 paddle 系列 logger 降到 WARNING，消除模型构建期的 INFO 噪声。
+
+    PaddleX 在 ``paddlex/__init__`` 导入时调用 ``setup_logging()`` 把 ``paddlex``
+    logger 设为 INFO，并挂上写 ``sys.stderr`` 的 ``StreamHandler``。其 INFO 记录
+    （如 “Creating model: ...”）本属噪声，且会在 ``_suppress_ccache_probe_noise``
+    的 fd 2 重定向窗口内 emit、与该 fd 的 dup2/close 相撞，触发标准库的
+    “--- Logging error ---”。``setup_logging`` 仅在导入时执行一次，故必须在
+    ``import paddleocr`` 之后重设 level 才不会被覆盖。
+    """
+    for name in ("paddle", "paddlex", "paddleocr", "ppocr"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 MODEL_DIRS = {
@@ -762,6 +777,10 @@ class PaddleOCRService:
             from paddleocr import PaddleOCR
         except Exception as exc:
             raise OCRServiceError("E_OCR_002", "paddleocr dependency is not available") from exc
+
+        # paddleocr 导入会触发 paddlex.setup_logging() 将 paddlex logger 重置为 INFO；
+        # 必须在此之后降噪，否则模型构建期的 INFO 日志会在 fd 2 重定向窗口内 emit 失败。
+        _silence_paddle_loggers()
 
         try:
             import inspect
