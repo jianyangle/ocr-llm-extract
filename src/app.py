@@ -136,6 +136,7 @@ def main() -> int:
     _register_fonts()
     window = build_main_window()
     window.show()
+    window.start_model_preload()
     return app.exec()
 
 
