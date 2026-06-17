@@ -29,6 +29,12 @@ def _suppress_ccache_probe_noise():
     ccache 仅用于重新编译自定义算子，纯 OCR 推理不需要，因此这两条输出都是无害
     噪音，这里一并静音。子进程输出必须在 OS fd 层重定向（``contextlib.redirect_stderr``
     只替换 Python 的 ``sys.stderr``，对子进程继承的真实 fd 2 无效）。
+
+    已知取舍：fd 2 重定向与 ``warnings.catch_warnings()`` 都是**进程全局且非线程
+    安全**的。引擎构建已从构造期挪到后台预热线程，因此本上下文只包裹单次
+    ``PaddleOCR(**kwargs)`` 构造、且仅在应用启动、尚无识别任务运行的极短窗口内生效；
+    此期间若其他线程恰好写 stderr 或触发 warning，会被一并吞掉/受过滤器影响。
+    鉴于窗口极小、概率极低，接受该取舍而不引入更重的隔离。
     """
     saved_fd = None
     devnull_fd = None

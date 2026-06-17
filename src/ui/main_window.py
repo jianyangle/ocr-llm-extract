@@ -1681,6 +1681,11 @@ class MainWindow(QMainWindow):
 
     def start_model_preload(self) -> None:
         """窗口显示后触发本地模型后台预热（仅 ocr_service 提供该能力时）。"""
+        # 重入守卫：预热线程仍在运行时直接返回，避免覆盖 _model_preload_thread 引用，
+        # 否则旧 QThread 失去引用、_shutdown_model_preload 无法 quit/wait，运行中被销毁
+        # 会触发 Qt abort（与 _shutdown_recognition 防范的崩溃面同源）。
+        if self._model_preload_thread is not None and self._model_preload_thread.isRunning():
+            return
         engine = getattr(self.controller, "engine", None)
         ocr_service = getattr(engine, "ocr_service", None)
         if ocr_service is None or not hasattr(ocr_service, "maybe_preload_local"):
