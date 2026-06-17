@@ -42,6 +42,11 @@ class RoutingOCRService:
         self._online = online
         self._use_online = bool(getattr(config, "ocr_use_online", False))
 
+    def maybe_preload_local(self) -> None:
+        """仅当当前走本地 OCR 时，触发本地引擎预热；在线模式直接跳过。"""
+        if not self._use_online:
+            self._local.preload()
+
     def recognize(
         self,
         image_path: str,
