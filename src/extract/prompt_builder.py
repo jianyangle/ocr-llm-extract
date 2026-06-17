@@ -52,8 +52,9 @@ def build_messages(
     total_passes: int,
     schema_hint: str | None,
     markdown_input: bool = False,
+    system_prompt: str | None = None,
 ) -> list[dict[str, str]]:
-    system_prompt = _SYSTEM_PROMPT
+    system_prompt = system_prompt or _SYSTEM_PROMPT
     if markdown_input:
         system_prompt += f"\n\n{_MARKDOWN_ADAPTER_PROMPT}"
     if schema_hint:
