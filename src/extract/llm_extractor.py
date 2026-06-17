@@ -11,6 +11,7 @@ from .chunker import split_markdown_passes, split_passes
 from .errors import ExtractServiceError
 from .field_types import email_equivalent, phone_equivalent
 from .grounding import ground_rows, normalize_value_for_dedupe
+from .ollama_overrides import apply_ollama_overrides
 from .output_normalizer import (
     map_object_rows_to_arrays,
     normalize_rows,
@@ -89,6 +90,7 @@ class LLMExtractor:
         provider_cfg: AppConfig,
         ocr_confidence: float | None = None,
     ) -> ExtractionOutcome:
+        provider_cfg = apply_ollama_overrides(provider_cfg)
         source = text if isinstance(text, ExtractionInput) else ExtractionInput.from_text(str(text))
         template = self._resolve_template(
             text=source.flat_text,
@@ -291,6 +293,7 @@ class LLMExtractor:
                 total_passes=len(pass_texts),
                 schema_hint=schema_hint,
                 markdown_input=source.has_markdown,
+                system_prompt=getattr(provider_cfg, "extraction_system_prompt", "") or None,
             )
             for pass_index, pass_text in enumerate(pass_texts, start=1)
         ]
