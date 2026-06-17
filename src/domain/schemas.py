@@ -34,6 +34,8 @@ class AppConfig:
     llm_prompt_cache_enabled: bool = False
     allow_thinking: bool = False
     ollama_num_ctx: int = 8192
+    ollama_overrides: dict[str, Any] = field(default_factory=dict)
+    extraction_system_prompt: str = ""
     grounding_fuzzy_threshold: float = 0.75
     grounding_mode: Literal["off", "balanced", "strict"] = "off"
     ocr_profile: Literal["fast", "balanced", "accurate"] = "balanced"
