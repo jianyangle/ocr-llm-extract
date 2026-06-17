@@ -478,6 +478,24 @@ class _RecognitionWorker(QObject):
         self.engine_event.emit(event)
 
 
+class _ModelPreloadWorker(QObject):
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, *, ocr_service: Any) -> None:
+        super().__init__()
+        self._ocr_service = ocr_service
+
+    def run(self) -> None:
+        try:
+            maybe_preload = getattr(self._ocr_service, "maybe_preload_local", None)
+            if callable(maybe_preload):
+                maybe_preload()
+            self.finished.emit()
+        except Exception as exc:  # 后台线程绝不可崩进程
+            self.failed.emit(str(exc))
+
+
 class _TitleBarControlButton(QPushButton):
     def __init__(self, kind: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -698,6 +716,8 @@ class MainWindow(QMainWindow):
         self._ui_recognition_running = False
         self._recognition_thread: QThread | None = None
         self._recognition_worker: _RecognitionWorker | None = None
+        self._model_preload_thread: QThread | None = None
+        self._model_preload_worker: _ModelPreloadWorker | None = None
         self._task_review_projection = TaskReviewProjection(
             ocr_placeholder=INSPECTOR_OCR_PLACEHOLDER,
             empty_tips=INSPECTOR_EMPTY_TIPS,
@@ -889,6 +909,19 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("statusBarLabel")
         self.status_detail_label = QLabel("")
         self.status_detail_label.setObjectName("statusDetailLabel")
+
+        self.model_preload_dot = _StatusDot()
+        self.model_preload_label = QLabel("本地模型加载中…")
+        self.model_preload_label.setObjectName("statusDetailLabel")
+        self.model_preload_indicator = QWidget()
+        _model_preload_layout = QHBoxLayout(self.model_preload_indicator)
+        _model_preload_layout.setContentsMargins(0, 0, 0, 0)
+        _model_preload_layout.setSpacing(6)
+        _model_preload_layout.addWidget(self.model_preload_dot)
+        _model_preload_layout.addWidget(
+            self.model_preload_label, alignment=Qt.AlignmentFlag.AlignVCenter
+        )
+        self.model_preload_indicator.setVisible(False)
         self._apply_button_icons()
 
     def _apply_button_icons(self) -> None:
@@ -1092,6 +1125,7 @@ class MainWindow(QMainWindow):
         status_bar_layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignVCenter)
         status_bar_layout.addWidget(self.status_detail_label, alignment=Qt.AlignmentFlag.AlignVCenter)
         status_bar_layout.addStretch(1)
+        status_bar_layout.addWidget(self.model_preload_indicator)
         status_bar_layout.addWidget(self.clear_console_button)
         status_bar_layout.addWidget(self.toggle_console_button)
         content_layout.addWidget(status_bar_widget)
@@ -1645,10 +1679,48 @@ class MainWindow(QMainWindow):
         self._recognition_worker = None
         self._recognition_thread = None
 
+    def start_model_preload(self) -> None:
+        """窗口显示后触发本地模型后台预热（仅 ocr_service 提供该能力时）。"""
+        engine = getattr(self.controller, "engine", None)
+        ocr_service = getattr(engine, "ocr_service", None)
+        if ocr_service is None or not hasattr(ocr_service, "maybe_preload_local"):
+            return
+        self.model_preload_dot.set_state("running")
+        self.model_preload_indicator.setVisible(True)
+
+        thread = QThread(self)
+        worker = _ModelPreloadWorker(ocr_service=ocr_service)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_preload_finished)
+        worker.failed.connect(self._on_model_preload_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_model_preload_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._model_preload_thread = thread
+        self._model_preload_worker = worker
+        thread.start()
+
+    def _on_model_preload_finished(self) -> None:
+        self.model_preload_indicator.setVisible(False)
+
+    def _on_model_preload_failed(self, message: str) -> None:
+        self.model_preload_dot.set_state("error")
+        self.model_preload_label.setText("本地模型加载失败")
+        self.append_log(level="warn", message=f"Local OCR model preload failed: {message}")
+
+    def _on_model_preload_thread_finished(self) -> None:
+        self._model_preload_worker = None
+        self._model_preload_thread = None
+
     def closeEvent(self, event: Any) -> None:
         # 关闭时若后台识别线程仍在跑，必须先请求停止并等它结束，否则运行中的 QThread
         # 被销毁会触发 Qt abort（SIGABRT）。在线 OCR 的长轮询会拉长这个窗口。
         self._shutdown_recognition()
+        self._shutdown_model_preload()
         super().closeEvent(event)
 
     def _shutdown_recognition(self) -> None:
@@ -1666,6 +1738,15 @@ class MainWindow(QMainWindow):
         # requests 调用；若关闭恰逢一次阻塞的 submit/get（socket timeout 可达数十秒），
         # 15s wait 会超时返回、线程随窗口销毁仍可能 abort。彻底消除需可中断 socket，
         # 成本高且概率极低，此处接受该残留（主崩溃面——任意运行中识别——已消除）。
+        thread.wait(15000)
+
+    def _shutdown_model_preload(self) -> None:
+        thread = self._model_preload_thread
+        if thread is None or not thread.isRunning():
+            return
+        # 模型加载是不可中断的同步调用，无法提前 cancel；quit 仅停事件循环，
+        # wait 会阻塞到 worker.run() 返回（最坏约一次模型加载耗时）。
+        thread.quit()
         thread.wait(15000)
 
     def _on_recognition_finished(self) -> None:
