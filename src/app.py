@@ -157,6 +157,11 @@ def main() -> int:
     _register_fonts()
     window = build_main_window()
     window.show()
+    # 无边框窗口在有前台竞争时（如刚关闭同一程序后立即重开）可能被画在其它窗口
+    # 之后，表现为"只有任务栏图标、看不到界面"。raise_ 把窗口提到 Z-order 顶部
+    # （不受 Windows 前台锁定限制，保证可见），activateWindow 再尝试取得焦点。
+    window.raise_()
+    window.activateWindow()
     return app.exec()
 
 
