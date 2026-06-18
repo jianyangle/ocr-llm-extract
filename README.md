@@ -1,6 +1,8 @@
 # OCR Extract Project
 
 > 导入图片 / PDF / 文本 → OCR 识别 → LLM 按你定义的规则提取结构化数据 → 写入 Excel。
+>
+> 程序下载地址1 [OCRExtract_V0.0.2.7z](https://github.com/jianyangle/ocr-llm-extract/releases/download/OCRExtract_V0.02/OCRExtract_V0.0.2.7z)
 
 ![应用界面](docs/screenshot.png)
 
