@@ -24,7 +24,7 @@ from .provider_ollama import OllamaAdapter
 from .provider_openai import OpenAICompatibleAdapter
 from .schema_builder import build_rows_schema
 from .template_catalog import TemplateCatalog
-from .template_extractor import extract_by_line_rules
+from .template_extractor import LineBlock, extract_by_line_rules
 from .type_inference import infer_template_columns
 
 
@@ -203,6 +203,7 @@ class LLMExtractor:
                     expected_columns=expected_columns,
                     provider_cfg=provider_cfg,
                     line_rows=line_result.rows,
+                    line_blocks=line_result.blocks,
                 )
         return self._run_llm_grounded_extract(
             source=source,
@@ -220,34 +221,41 @@ class LLMExtractor:
         expected_columns: int,
         provider_cfg: AppConfig,
         line_rows: list[dict[str, str]],
+        line_blocks: list[LineBlock] | None = None,
     ) -> list[GroundedExtractRow]:
         header = template.examples[0]
         parent_text = unmatched_text.strip()
         if len(parent_text) < 5:
             _logger.warning("Skipping parent-field backfill because unmatched_text is too short")
-            parent_values = [" "] * expected_columns
+            parent_rows: list[GroundedExtractRow] = []
         else:
             try:
-                parent_grounded = self._run_llm_grounded_extract(
+                parent_rows = self._run_llm_grounded_extract(
                     source=ExtractionInput.from_text(parent_text),
                     template=template,
                     expected_columns=expected_columns,
                     provider_cfg=provider_cfg,
                 )
-                parent_values = parent_grounded[0].values if parent_grounded else [" "] * expected_columns
             except ExtractServiceError:
-                parent_values = [" "] * expected_columns
+                parent_rows = []
         normalized_rows: list[list[str]] = []
-        for row in line_rows:
-            values = [str(row.get(column_name, " ")).strip() or " " for column_name in header]
-            for field_name in template.line_rules.repeating_field_from_parent:
-                if field_name not in header:
-                    continue
-                column_index = header.index(field_name)
-                if values[column_index].strip():
-                    continue
-                values[column_index] = parent_values[column_index]
-            normalized_rows.append(values)
+        blocks = line_blocks or [LineBlock(rows=line_rows)]
+        for block_index, block in enumerate(blocks):
+            parent_values = _parent_values_for_block(
+                parent_rows,
+                block_index=block_index,
+                expected_columns=expected_columns,
+            )
+            for row in block.rows:
+                values = [str(row.get(column_name, " ")).strip() or " " for column_name in header]
+                for field_name in template.line_rules.repeating_field_from_parent:
+                    if field_name not in header:
+                        continue
+                    column_index = header.index(field_name)
+                    if values[column_index].strip():
+                        continue
+                    values[column_index] = parent_values[column_index]
+                normalized_rows.append(values)
         return ground_rows(normalized_rows, source_text=text, cfg=provider_cfg)
 
     def _run_llm_grounded_extract(
@@ -367,6 +375,19 @@ def _resolve_parse_mode(provider_cfg: AppConfig) -> str:
     if parse_mode in {"strict", "balanced", "aggressive"}:
         return parse_mode
     return "balanced"
+
+
+def _parent_values_for_block(
+    parent_rows: list[GroundedExtractRow],
+    *,
+    block_index: int,
+    expected_columns: int,
+) -> list[str]:
+    if not parent_rows:
+        return [" "] * expected_columns
+    if block_index < len(parent_rows):
+        return parent_rows[block_index].values
+    return parent_rows[0].values
 
 
 def _build_pass_texts(text: str, provider_cfg: AppConfig, *, template: PromptTemplate) -> list[str]:

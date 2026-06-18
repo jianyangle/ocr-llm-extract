@@ -718,6 +718,7 @@ class MainWindow(QMainWindow):
         self._recognition_worker: _RecognitionWorker | None = None
         self._model_preload_thread: QThread | None = None
         self._model_preload_worker: _ModelPreloadWorker | None = None
+        self._after_model_preload: Callable[[], None] | None = None
         self._task_review_projection = TaskReviewProjection(
             ocr_placeholder=INSPECTOR_OCR_PLACEHOLDER,
             empty_tips=INSPECTOR_EMPTY_TIPS,
@@ -1652,10 +1653,15 @@ class MainWindow(QMainWindow):
         self.append_log(level="info", message=f"Queue started with {pending_count} pending tasks.")
         self._ui_recognition_running = True
         self._reset_stream_result_cache()
-        self._set_status("识别运行中…", state="running")
+        self._set_status("本地模型加载中…", state="running")
         self._refresh_controls()
-        self._start_recognition_in_background()
+        if not self.start_model_preload(on_finished=self._start_recognition_after_model_preload):
+            self._start_recognition_after_model_preload()
         return True
+
+    def _start_recognition_after_model_preload(self) -> None:
+        self._set_status("识别运行中…", state="running")
+        self._start_recognition_in_background()
 
     def _start_recognition_in_background(self) -> None:
         thread = QThread(self)
@@ -1679,18 +1685,25 @@ class MainWindow(QMainWindow):
         self._recognition_worker = None
         self._recognition_thread = None
 
-    def start_model_preload(self) -> None:
-        """窗口显示后触发本地模型后台预热（仅 ocr_service 提供该能力时）。"""
+    def start_model_preload(self, *, on_finished: Callable[[], None] | None = None) -> bool:
+        """触发本地模型后台预热；在线模式或无预热能力时返回 ``False``。"""
         # 重入守卫：预热线程仍在运行时直接返回，避免覆盖 _model_preload_thread 引用，
         # 否则旧 QThread 失去引用、_shutdown_model_preload 无法 quit/wait，运行中被销毁
         # 会触发 Qt abort（与 _shutdown_recognition 防范的崩溃面同源）。
         if self._model_preload_thread is not None and self._model_preload_thread.isRunning():
-            return
+            if on_finished is not None:
+                self._after_model_preload = on_finished
+            return True
         engine = getattr(self.controller, "engine", None)
         ocr_service = getattr(engine, "ocr_service", None)
         if ocr_service is None or not hasattr(ocr_service, "maybe_preload_local"):
-            return
+            return False
+        should_preload = getattr(ocr_service, "should_preload_local", None)
+        if callable(should_preload) and not should_preload():
+            return False
+        self._after_model_preload = on_finished
         self.model_preload_dot.set_state("running")
+        self.model_preload_label.setText("本地模型加载中…")
         self.model_preload_indicator.setVisible(True)
 
         thread = QThread(self)
@@ -1708,14 +1721,23 @@ class MainWindow(QMainWindow):
         self._model_preload_thread = thread
         self._model_preload_worker = worker
         thread.start()
+        return True
 
     def _on_model_preload_finished(self) -> None:
         self.model_preload_indicator.setVisible(False)
+        callback = self._after_model_preload
+        self._after_model_preload = None
+        if callback is not None:
+            callback()
 
     def _on_model_preload_failed(self, message: str) -> None:
+        self._after_model_preload = None
+        self._ui_recognition_running = False
         self.model_preload_dot.set_state("error")
         self.model_preload_label.setText("本地模型加载失败")
         self.append_log(level="warn", message=f"Local OCR model preload failed: {message}")
+        self._set_status("本地模型加载失败。", detail=message, state="error")
+        self._refresh_controls()
 
     def _on_model_preload_thread_finished(self) -> None:
         self._model_preload_worker = None

@@ -47,6 +47,10 @@ class RoutingOCRService:
         if not self._use_online:
             self._local.preload()
 
+    def should_preload_local(self) -> bool:
+        """当前运行时是否需要在启动队列前预热本地 OCR。"""
+        return not self._use_online
+
     def recognize(
         self,
         image_path: str,

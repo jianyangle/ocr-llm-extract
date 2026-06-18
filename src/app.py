@@ -50,6 +50,26 @@ def _suppress_subprocess_console() -> None:
     subprocess.Popen.__init__ = _patched_init  # type: ignore[method-assign]
 
 
+def _set_windows_app_id() -> None:
+    """让 Windows 任务栏用应用自身的图标，而非宿主进程的图标。
+
+    主窗口是无边框的（`FramelessWindowHint`），没有原生标题栏，`setWindowIcon`
+    设的窗口图标只在 Alt+Tab 和任务栏体现。而任务栏按钮的图标归属由进程的
+    AppUserModelID 决定：未显式设置时，进程沿用宿主（`python.exe` 或 PyInstaller
+    默认）的 app id，任务栏会回退到空白/通用图标。必须在 QApplication 创建前调用。
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "OCRExtract.LLMExtract.Desktop"
+        )
+    except (AttributeError, OSError):  # 老旧/异常环境下静默降级，不阻断启动
+        pass
+
+
 def _register_fonts() -> None:
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
@@ -130,13 +150,13 @@ def build_main_window(project_root: str | Path | None = None) -> MainWindow:
 
 
 def main() -> int:
+    _set_windows_app_id()
     _suppress_subprocess_console()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setWindowIcon(_app_icon())
     _register_fonts()
     window = build_main_window()
     window.show()
-    window.start_model_preload()
     return app.exec()
 
 

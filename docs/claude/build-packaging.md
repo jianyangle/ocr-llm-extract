@@ -43,3 +43,4 @@ pyinstaller --noconfirm --windowed --name OCRExtract \
   ```bash
   python -c "from PIL import Image; Image.open('src/ui/assets/icons/app_icon/OLE_256.png').save('src/ui/assets/icons/app_icon/OLE.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
   ```
+- **任务栏图标**：主窗口无边框（`FramelessWindowHint`），窗口图标只在 Alt+Tab 和任务栏体现，而任务栏按钮的图标归属由进程 AppUserModelID 决定。`src/app.py` 的 `_set_windows_app_id()` 在 `QApplication` 创建前设置该 id（否则任务栏回退到空白/通用图标）。**打包后需人工验收**：运行 `dist/OCRExtract/OCRExtract.exe`，确认任务栏按钮显示 OLE 图标而非空白。若仍空白，再排查 `_app_icon()` 是否真正加载到 `OLE_*.png`。
