@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from src.core.engine_events import TaskOcrCompleted
-from src.core.pdf_ocr_aggregator import PDFOCRAggregatePage
+from src.core.pdf_ocr_aggregator import PDFOCRAggregatePage, compose_pdf_text
 from src.domain.schemas import PageError, PDFLimits, PDFPageOCRSnapshot
 from src.ocr.errors import PDFAdapterError
 from src.ocr.online_client import OnlineOCRClient
@@ -42,9 +42,10 @@ def _default_client_factory(
 class OnlinePdfRun:
     """在线整文档异步 job 的运行对象。
 
-    形状与 ``PDFOCRAggregationRun`` 对齐，以便 ``recognize_pdf_pages`` 复用：
+    该对象与 ``PDFOCRAggregationRun`` 共享由以下 5 个成员组成的接口：
     暴露 ``expected_page_count`` / ``page_snapshots`` / ``page_errors`` /
     ``iter_pages()`` / ``build_base_ocr_event(task_id)``。
+    ``OCRStage._recognize_pdf`` 通过 ``PdfOcrRun`` seam 统一消费这两种实现。
 
     在线 PDF 不做 hybrid / region rescue / adaptive retry（重试字段恒为 False）。
     """
@@ -99,7 +100,7 @@ class OnlinePdfRun:
                 adaptive_retry_applied=False,
             )
             self._page_snapshots.append(snapshot)
-            self._last_aggregated_text = self.compose_pdf_text(self._page_snapshots)
+            self._last_aggregated_text = compose_pdf_text(self._page_snapshots)
             page_error: PageError | None = None
             if page.error_code is not None:
                 page_error = PageError(
@@ -121,6 +122,7 @@ class OnlinePdfRun:
 
         self._finished = True
 
+    # 在线 PDF 无 adaptive retry（见 ADR-0011）；两个返回分支都显式声明 retry 字段，避免依赖事件默认值（边界见 ADR-0005）。
     def build_base_ocr_event(self, *, task_id: str) -> TaskOcrCompleted:
         if not self._finished:
             raise RuntimeError("build_base_ocr_event() requires iter_pages() to finish first")
@@ -134,6 +136,12 @@ class OnlinePdfRun:
                 active_template_name=None,
                 region_rescue=[],
                 block_count=0,
+                adaptive_retry_triggered=False,
+                adaptive_retry_applied=False,
+                retry_profile_from=None,
+                retry_profile_to=None,
+                first_pass_confidence_min=None,
+                second_pass_confidence_min=None,
             )
 
         confidence_values = [
@@ -148,7 +156,7 @@ class OnlinePdfRun:
         ]
         return TaskOcrCompleted(
             task_id=task_id,
-            normalized_text=self.compose_pdf_text(self._page_snapshots),
+            normalized_text=compose_pdf_text(self._page_snapshots),
             ocr_confidence=sum(confidence_values) / len(confidence_values) if confidence_values else None,
             page_snapshots=list(self._page_snapshots),
             active_template_name=None,
@@ -156,14 +164,13 @@ class OnlinePdfRun:
             block_count=sum(snapshot.block_count for snapshot in self._page_snapshots),
             confidence_min=min(confidence_min_values) if confidence_min_values else None,
             pdf_page_count=self.expected_page_count,
+            adaptive_retry_triggered=False,
+            adaptive_retry_applied=False,
+            retry_profile_from=None,
+            retry_profile_to=None,
+            first_pass_confidence_min=None,
+            second_pass_confidence_min=None,
         )
-
-    @staticmethod
-    def compose_pdf_text(page_snapshots: list[PDFPageOCRSnapshot]) -> str:
-        return "\n\n".join(
-            f"[PAGE {snapshot.page_index}]\n{snapshot.normalized_text}" for snapshot in page_snapshots
-        ).strip()
-
 
 class OnlinePdfOCRProcessor:
     """在线 PDF OCR 处理器（整文档异步 job，spec §3.6）。

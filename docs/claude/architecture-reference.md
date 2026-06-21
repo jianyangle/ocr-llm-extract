@@ -18,7 +18,7 @@
   │                      PDFOCRAggregator 聚合并持有 Retry Page Budget（ADR-0005）
   │      • Online OCR → OnlineOCRService（百度 AI Studio 异步 job，ADR-0011）
   │                      故意绕过本地文本质量管线（ADR-0010）；可携带 Markdown OCR Text
-  │          PDF 分支 → 在 SourceProcessor seam 整篇提交为一个 job（ADR-0012），
+  │          PDF 分支 → 在 OCRStage._recognize_pdf 的 PdfOcrRun 选择点整篇提交为一个 job（ADR-0012），
   │                      完全绕过 PDFPageProcessor（无逐页 render / Hybrid / region rescue）
   │    └─▶ 写入 Stage Buffer（深度 2 的 FIFO，满则 OCR Stage 阻塞）
   │
@@ -45,10 +45,12 @@
 - **`src/domain/schemas.py`** — 所有数据模型（`AppConfig`, `TaskItem`, `ExtractRow`, `ExtractionInput`, `ExtractionOutcome`, `ItemResult`, `WriteSummary`, `GroundedCell`, `GroundedExtractRow`, `ColumnSpec`, `FieldGroup`, `FieldRegion`, `LineRules`, `PDFPageOCRSnapshot`, `PDFPageExtractResult`, `PDFPageWorkUnit`, `PageError` 等），纯 dataclass，无业务逻辑
 - **`src/core/task_engine.py`** — `TaskEngine` 是引擎的 Facade，管理任务队列状态（add/delete/pause/resume/retry/start），内部委托给 `TaskOrchestrator`
 - **`src/core/task_pipeline.py`** — 流水线协作类：
-  - `TaskOrchestrator` — 顺序处理 pending 任务，协调 OCR Stage → Extract Stage 流水线、Stage Buffer 背压、Engine Event 发布时机
-  - `SourceProcessor` — 处理不同来源（text/image/pdf）的 OCR 识别；是 Online OCR PDF 分叉的 seam（ADR-0012），并保留委托给 `PDFOCRAggregator` 的旧 PDF 兼容 façade
+  - `TaskOrchestrator` — 顺序处理 pending 任务，协调 OCR Stage → Extract Stage 流水线、Stage Buffer 背压、Engine Event 发布时机；OCR/Extract 的 per-item body 已外移，只在锁内应用状态突变、reducer 和事件发布
+  - `SourceProcessor` — 处理 text/image/pdf 来源的 OCR 识别，并保留委托给 `PDFOCRAggregator` 的旧 PDF 兼容 façade；Online OCR PDF 分叉由 `OCRStage._recognize_pdf` 的 `PdfOcrRun` 选择点负责
   - `ResultStore` — 结果行的 upsert、序列化、构建
   - `EventPublisher` — typed `EngineEvent` 事件广播；保留 `EVT-TASK-001~006` 作为日志兼容 code，通过单参 `event_sink(event)` 通知 UI
+- **`src/core/ocr_stage.py`** — `OCRStage` 是 OCR Stage 的 per-item seam：text 直接 passthrough，image 产出 `ImageRecognized`，PDF 以 generator 产出 `PdfDocStarted` / `PageCommitted` / `DocOcrCompleted` / `OCRFailure` 等语义 output；不持有队列、不发布事件、不修改任务完成态，由 `TaskOrchestrator` 负责扇出和排序
+- **`src/core/extract_stage.py`** — `ExtractStage` 是 Extract Stage 的 per-item seam：`extract_one()` 将已 OCR 的工作项映射成 `ExtractResult`（success_rows / rescue_events / extraction_input / error），止于 reducer 之前；field rescue、text-layer attribution sidecar、typed rows finalize 保持在该模块内，任务完成归约仍由 `TaskOrchestrator` 执行
 - **`src/core/engine_events.py`** — 冻结的 typed `EngineEvent` dataclass 定义（`TaskPageResultStreamed` / `TaskSucceeded` / `TaskFailed` 等）；进程内消费者按 dataclass 类型 dispatch，不解析裸事件码
 - **`src/core/pdf_page_processor.py`** — `PDFPageProcessor` 是 Local OCR 的 PDF 页级处理 module，接收纯值输入并按页流式 yield `PDFPageWorkUnit`；每页选 text-layer / raster / Hybrid Page Render 策略；页级错误写入 `PageError`，文档级错误抛 `PDFDocumentError`。不拥有 LLM 抽取、field-region rescue、进度事件、任务状态变更
 - **`src/core/pdf_ocr_aggregator.py`** — `PDFOCRAggregator` 是单个 PDF 文档在 OCR Stage 内的聚合边界（ADR-0005）；驱动 `PDFPageProcessor`，持有该文档的 Retry Page Budget，聚合 `PDFPageOCRSnapshot`，产出 PDF 级 OCR completion value object。接收窄 PDF/OCR 输入而非完整 `AppConfig`，区分页级失败（作为数据返回）与文档级失败（抛出）
@@ -86,7 +88,7 @@
 
 OCR Source（Local / Online 二分）由 `RoutingOCRService` 依 `ocr_use_online` 解析；详见 ADR-0010/0011/0012。
 
-- **`routing_service.py`** — `RoutingOCRService`：唯一注入的 OCR 服务，按 `ocr_use_online` 在 Local / image-region Online 之间路由，二者共用 `recognize()` duck 接口；Online OCR PDF 在更早的 `SourceProcessor` seam 分叉
+- **`routing_service.py`** — `RoutingOCRService`：唯一注入的 OCR 服务，按 `ocr_use_online` 在 Local / image-region Online 之间路由，二者共用 `recognize()` duck 接口；Online OCR PDF 不经过该 `recognize()` 路由，而在 `OCRStage._recognize_pdf` 的 `PdfOcrRun` 选择点分叉
 - **`models.py`** — OCR 数据模型：`OCRTextBlock`（含 text/score/box/end）和 `OCRResult`（整页结果，含置信度统计与 Adaptive Retry 状态）
 - **`paddle_service.py`** — 封装 PaddleOCR 3.2.0，支持 fast/balanced/accurate profile，Adaptive Retry（低置信度时升半档 profile），OCR 后交 TBPU 排版后处理，模型在 `models/`。是 Local OCR 与 Adaptive Retry 的 owner
 - **`pdf_adapter.py`** — 用 pypdfium2 读 PDF：优先抽原生文本层（`get_text_bounded`），失败则按 `pdf_render_dpi` 逐页栅格化

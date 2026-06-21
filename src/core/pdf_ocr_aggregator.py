@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 
 from src.core.engine_events import TaskOcrCompleted
 from src.core.pdf_page_processor import PDFDocumentError, PDFPageProcessor
@@ -18,6 +18,12 @@ from src.ocr.errors import PDFAdapterError
 from src.ocr.paddle_service import OCRRuntimeOptions
 
 _logger = logging.getLogger(__name__)
+
+
+def compose_pdf_text(page_snapshots: list[PDFPageOCRSnapshot]) -> str:
+    return "\n\n".join(
+        f"[PAGE {snapshot.page_index}]\n{snapshot.normalized_text}" for snapshot in page_snapshots
+    ).strip()
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,31 @@ class PDFOCRAggregatePage:
     crop: Callable[[BBox], Any] | None
 
 
+@runtime_checkable
+class PdfOcrRun(Protocol):
+    """单个 PDF 文档 OCR 运行对象的共享 seam；Local（PDFOCRAggregationRun）与
+    Online（OnlinePdfRun）两个 adapter 都满足它。两者接口相同、实现不同，故用
+    Protocol 而非继承（见 ADR-0005）。
+
+    仓库无类型检查器（mypy/pyright 均未配置），故 @runtime_checkable +
+    tests/test_core_pdf_ocr_run_seam.py 的 isinstance 一致性测试承担结构强制；
+    build_base_ocr_event 的 retry 字段语义差异由各 Run 的契约测试钉死。
+    """
+
+    @property
+    def expected_page_count(self) -> int: ...
+
+    @property
+    def page_snapshots(self) -> list[PDFPageOCRSnapshot]: ...
+
+    @property
+    def page_errors(self) -> list[PageError]: ...
+
+    def iter_pages(self) -> Iterator[PDFOCRAggregatePage]: ...
+
+    def build_base_ocr_event(self, *, task_id: str) -> TaskOcrCompleted: ...
+
+
 class PDFOCRAggregationRun:
     def __init__(
         self,
@@ -137,7 +168,7 @@ class PDFOCRAggregationRun:
             if snapshot is not None:
                 self._page_snapshots.append(snapshot)
                 self._page_snapshots.sort(key=lambda item: item.page_index)
-                self._last_aggregated_text = self.compose_pdf_text(self._page_snapshots)
+                self._last_aggregated_text = compose_pdf_text(self._page_snapshots)
             if unit.error is not None:
                 self._page_errors.append(unit.error)
             yield PDFOCRAggregatePage(
@@ -192,7 +223,7 @@ class PDFOCRAggregationRun:
         retry_profile_to = next((snapshot.retry_profile_to for snapshot in self._page_snapshots if snapshot.retry_profile_to), None)
         return TaskOcrCompleted(
             task_id=task_id,
-            normalized_text=self.compose_pdf_text(self._page_snapshots),
+            normalized_text=compose_pdf_text(self._page_snapshots),
             ocr_confidence=sum(confidence_values) / len(confidence_values) if confidence_values else None,
             page_snapshots=list(self._page_snapshots),
             active_template_name=None,
@@ -207,13 +238,6 @@ class PDFOCRAggregationRun:
             first_pass_confidence_min=min(first_pass_confidence_values) if first_pass_confidence_values else None,
             second_pass_confidence_min=min(second_pass_confidence_values) if second_pass_confidence_values else None,
         )
-
-    @staticmethod
-    def compose_pdf_text(page_snapshots: list[PDFPageOCRSnapshot]) -> str:
-        return "\n\n".join(
-            f"[PAGE {snapshot.page_index}]\n{snapshot.normalized_text}" for snapshot in page_snapshots
-        ).strip()
-
 
 class PDFOCRAggregator:
     def begin(

@@ -13,6 +13,13 @@
 
 设置对话框当前只暴露 `single_line` / `multi_para` / `none` 三个选项；若加载到旧值（如 `auto`），界面会映射显示为 `multi_para` 并保留原始持久化值，直到用户主动改动该下拉框后才会覆盖保存。
 
+## Ollama 覆盖层（`ollama_overrides` / `extraction_system_prompt`）
+
+- `ollama_overrides`（dict）：仅当 `provider == "ollama"` 时生效的覆盖层。`apply_ollama_overrides`（`src/extract/ollama_overrides.py`）把其中的键合并到生效 `AppConfig` 顶层字段，可覆盖任意 init 字段（`ollama_overrides` 自身除外），未知/不可覆盖键被忽略并打 warning。对在线 provider 或空 overrides 返回原对象（恒等），保证在线链路零影响。
+- `extraction_system_prompt`（str）：抽取请求的 system prompt 覆盖。`LLMExtractor` 在 `apply_ollama_overrides` 之后读取生效 config 的该顶层字段（`src/extract/llm_extractor.py:304`），空值回落为不传（使用默认 prompt）。
+- **隔离要点**：`extraction_system_prompt` 必须放进 `ollama_overrides` 内，**不要**直接写在 config.json 顶层。顶层读取是无条件的，顶层非空会让在线 provider 也带上该 system prompt（泄漏）；放进 overrides 后只有 ollama 链路会把它合并到生效 config，在线 provider 顶层保持为空、不受影响。
+- 向后兼容：旧 config.json 缺这两个键时分别回落空 dict / 空串（`src/io/config_store.py:190-191`）。
+
 ## 行为说明
 
 区域 rescue 具备软降级语义：当 `PIL` 不可导入或 `Image.open()` 失败时，任务会保留原始抽取结果继续执行，不应因 rescue 分支中断整条流水线。

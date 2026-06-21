@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.core.engine_events import EngineEvent
+from src.core.ocr_stage import OCRStage
 from src.core.pdf_ocr_aggregator import PDFOCRAggregator
 from src.domain.schemas import AppConfig, ExtractRow, ItemResult, TaskItem
 from src.extract import Extractor
@@ -58,11 +59,17 @@ class TaskEngine:
             pdf_adapter_getter=self._get_pdf_adapter,
             pdf_ocr_aggregator=self._pdf_ocr_aggregator,
         )
+        self._ocr_stage = OCRStage(
+            source_processor=self._source_processor,
+            pdf_ocr_aggregator=self._pdf_ocr_aggregator,
+            online_pdf_processor=online_pdf_processor,
+        )
         self._orchestrator = TaskOrchestrator(
             config_getter=lambda: self.config,
             extractor_getter=lambda: self.extractor,
             source_processor=self._source_processor,
             pdf_ocr_aggregator=self._pdf_ocr_aggregator,
+            ocr_stage=self._ocr_stage,
             result_store=self._result_store,
             event_publisher=self._event_publisher,
             online_pdf_processor=online_pdf_processor,
