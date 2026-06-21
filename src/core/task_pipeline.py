@@ -28,6 +28,7 @@ from src.core.ocr_stage import (
     PageCommitted,
     PdfDocStarted,
 )
+from src.core.admission_policy import decide_admission
 from src.core.pdf_ocr_aggregator import PDFOCRAggregator, PDFRetryBudgetSettings
 from src.domain.schemas import (
     AppConfig,
@@ -819,53 +820,17 @@ class TaskOrchestrator:
         def _feed_pending_tasks() -> None:
             seen: set[str] = set()
             while not stop_event.is_set():
-                pushed_any = False
                 with state_lock:
-                    ocr_busy = any(
-                        task.task_id in seen and task.status == "running_ocr"
-                        for task in tasks
-                    )
-                    pipeline_busy = any(
-                        task.task_id in seen and task.status in {"running_ocr", "running_extract"}
-                        for task in tasks
-                    )
-                    text_busy = any(
-                        task.task_id in seen
-                        and task.source_type == "text"
-                        and task.status in {"running_ocr", "running_extract"}
-                        for task in tasks
-                    )
-                    for task in tasks:
-                        if task.status != "pending" or task.task_id in seen:
-                            continue
-                        if task.source_type == "text":
-                            if pipeline_busy:
-                                break
-                            _start_pending_task(task)
-                            seen.add(task.task_id)
-                            pushed_any = True
-                            break
-                        if ocr_busy or text_busy:
-                            break
-                        _start_pending_task(task)
-                        seen.add(task.task_id)
-                        pushed_any = True
-                        break
-                if pushed_any:
+                    decision = decide_admission(tasks, seen)
+                    if decision.kind == "admit":
+                        assert decision.task is not None
+                        _start_pending_task(decision.task)
+                        seen.add(decision.task.task_id)
+                # 循环控制在锁外；上面的 state_lock 只覆盖准入突变本身。
+                if decision.kind == "admit":
                     continue
-                with state_lock:
-                    pipeline_busy = any(
-                        task.task_id in seen and task.status in {"running_ocr", "running_extract"}
-                        for task in tasks
-                    )
-                    has_pending = any(
-                        task.task_id not in seen and task.status == "pending"
-                        for task in tasks
-                    )
-                if not pipeline_busy and not has_pending:
+                if decision.kind == "done":
                     break
-                if not pipeline_busy:
-                    continue
                 time.sleep(_FEEDER_POLL_SECONDS)
             ocr_input_queue.put(stop_signal)
 
