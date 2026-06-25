@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRect, QThread, QSize, Qt, Signal, QVariantAnimation
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRect, QThread, QSize, Qt, QTimer, Signal, QVariantAnimation
 from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -69,6 +69,9 @@ TASK_QUEUE_ACTIONS_COLUMN_WIDTH = 58
 TASK_QUEUE_ACTION_BUTTON_SIZE = 24
 INSPECTOR_PANEL_HEIGHT = 246
 BOTTOM_STATUS_BAR_HEIGHT = 34
+# 流式刷新合并窗口（毫秒）：一波引擎事件在此窗口内塌缩成一次表格重建。
+# 取 ~16fps（60ms）：足够"动起来"的视觉流畅度，又能显著削减全量重建次数。
+TABLE_REFRESH_COALESCE_MS = 60
 
 
 def _resolve_default_excel_root() -> Path:
@@ -730,6 +733,16 @@ class MainWindow(QMainWindow):
         self._task_table_nodes: list[dict[str, object]] = []
         self._rendered_result_rows: list[dict[str, object]] = []
         self._inspector_selected_task_id: str | None = None
+        # 每行 cell widget（第 0/3 列按钮）的签名缓存，用于增量复用未变行的控件（见 _refresh_tasks_table）。
+        self._task_row_widget_signatures: list[tuple[object, ...]] = []
+        # 流式识别期间，引擎事件以 ~O(N) 速率到达，若每事件同步全量重建表格则总成本 O(N²)。
+        # 这里用脏标记 + 单次 QTimer 把一波事件合并成一次重建（见 _request_table_refresh）。
+        self._pending_refresh_tasks = False
+        self._pending_refresh_stream_results = False
+        self._refresh_coalesce_timer = QTimer(self)
+        self._refresh_coalesce_timer.setSingleShot(True)
+        self._refresh_coalesce_timer.setInterval(TABLE_REFRESH_COALESCE_MS)
+        self._refresh_coalesce_timer.timeout.connect(self._flush_table_refresh)
         self._inspector_selected_page_index: int | None = None
         self._inspector_syncing_selection = False
         self._last_inspector_data: InspectorRenderData | None = None
@@ -1801,7 +1814,7 @@ class MainWindow(QMainWindow):
             case TaskAutoDispatchTriggered(task_id=task_id):
                 if task_id:
                     self.append_log(level="info", message="任务已从运行队列自动分派。", task_id=task_id)
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True)
             case TaskOcrCompleted(task_id=task_id):
                 if task_id and event.active_template_name:
                     self.append_log(
@@ -1823,23 +1836,21 @@ class MainWindow(QMainWindow):
                             message=f"Region rescue completed. success={rescued}, total={len(rescue_items)}.",
                             task_id=task_id,
                         )
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True)
             case TaskPageResultStreamed(task_id=task_id):
-                self._render_stream_results_table()
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True, stream_results=True)
                 total = len(self.controller.tasks) if hasattr(self.controller, "tasks") else 0
                 if self._ui_recognition_running and total > 0:
                     self._set_status("识别运行中…", state="running")
             case TaskStarted():
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True)
             case TaskOcrProgressed():
                 # 在线 OCR 整份 job 轮询期的页级进度心跳：刷新任务表让进度“动起来”。
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True)
             case TaskProgressed(task_id=task_id) | TaskSucceeded(task_id=task_id) | TaskFailed(task_id=task_id):
                 if not task_id:
                     return
-                self._render_stream_results_table()
-                self._refresh_tasks_table()
+                self._request_table_refresh(tasks=True, stream_results=True)
                 completed = self._task_review_projection.stream_task_count()
                 total = len(self.controller.tasks) if hasattr(self.controller, "tasks") else 0
                 if self._ui_recognition_running and total > 0:
@@ -2516,17 +2527,71 @@ class MainWindow(QMainWindow):
             self.append_log(level="error", message=str(exc), task_id=task_id, error_code=getattr(exc, "code", None))
             self._set_status(str(exc), state="error")
 
+    def _request_table_refresh(self, *, tasks: bool = False, stream_results: bool = False) -> None:
+        """登记一次表格刷新请求，经单次 QTimer 合并后再真正重建（见 _flush_table_refresh）。
+
+        流式识别期间引擎事件以 ~O(N) 速率到达，逐事件同步全量重建表格会使总成本 O(N²)。
+        这里只置脏标记并（在定时器空闲时）启动合并窗口，把窗口内到达的所有事件塌缩成一次
+        重建，从根本上削减冗余重建次数。窗口外（用户点击等低频路径）仍可直接调用重建方法。
+        """
+        if tasks:
+            self._pending_refresh_tasks = True
+        if stream_results:
+            self._pending_refresh_stream_results = True
+        if (self._pending_refresh_tasks or self._pending_refresh_stream_results) and not self._refresh_coalesce_timer.isActive():
+            self._refresh_coalesce_timer.start()
+
+    def _flush_table_refresh(self) -> None:
+        """执行被合并的表格刷新：按脏标记每类表格各重建一次，然后清空标记。"""
+        self._refresh_coalesce_timer.stop()
+        do_stream_results = self._pending_refresh_stream_results
+        do_tasks = self._pending_refresh_tasks
+        self._pending_refresh_stream_results = False
+        self._pending_refresh_tasks = False
+        if do_stream_results:
+            self._render_stream_results_table()
+        if do_tasks:
+            self._refresh_tasks_table()
+
+    def _cancel_pending_table_refresh(self) -> None:
+        """丢弃尚未 flush 的合并刷新请求（调用方随后会做一次权威的全量刷新）。"""
+        self._refresh_coalesce_timer.stop()
+        self._pending_refresh_tasks = False
+        self._pending_refresh_stream_results = False
+
     def _refresh_all_tables(self) -> None:
+        self._cancel_pending_table_refresh()
         self._sync_task_review_inputs()
         self._refresh_tasks_table(sync_task_review_inputs=False)
         self._refresh_results_table(sync_task_review_inputs=False)
         self._refresh_controls()
         self._refresh_status_badges()
 
+    def _set_task_cell_widget(self, row: int, column: int, widget: QWidget) -> None:
+        """设置任务表 cell widget，并回收被替换的旧控件。
+
+        PySide6 的 ``QTableWidget.setCellWidget`` 不会销毁被替换的旧 cell widget——旧控件
+        继续挂在 table viewport 下存活。任务表在每条流式结果时全量重建并对第 0/3 列重设
+        cell widget，若不显式回收，旧控件会代代累积（实测批量识别后 viewport 子控件 3 万+），
+        引发 UI 卡顿，并在 Qt 遍历子控件/焦点链/布局时递归过深导致栈溢出闪退
+        （Qt6Widgets.dll 0xc00000fd）。取出旧控件 setParent(None)+deleteLater 才能真正释放。
+        """
+        old = self.tasks_table.cellWidget(row, column)
+        self.tasks_table.setCellWidget(row, column, widget)
+        if old is not None and old is not widget:
+            old.setParent(None)
+            old.deleteLater()
+
     def _refresh_tasks_table(self, *, sync_task_review_inputs: bool = True) -> None:
         if sync_task_review_inputs:
             self._sync_task_review_inputs()
         snapshot = self._task_review_snapshot()
+        # 增量复用：第 0/3 列按钮控件的构建占单次刷新成本 ~82%，但它们只取决于行签名
+        # （结构 + 状态）。捕获旧行数与上轮签名，签名未变且既有控件仍在的行直接复用、跳过重建；
+        # items（文本/进度，开销小）仍每次重建以反映进度心跳等高频更新。
+        previous_signatures = self._task_row_widget_signatures
+        old_row_count = self.tasks_table.rowCount()
+        new_signatures: list[tuple[object, ...]] = []
         self._task_table_nodes = [row.payload for row in snapshot.task_queue_rows]
         self.tasks_table.setRowCount(len(snapshot.task_queue_rows))
         for row_index, row in enumerate(snapshot.task_queue_rows):
@@ -2534,6 +2599,8 @@ class MainWindow(QMainWindow):
             task_id = row.task_id
             task = self._task_by_id(task_id)
             if task is None:
+                # 任务在刷新途中消失：保持索引对齐，用绝不命中复用的哨兵签名占位。
+                new_signatures.append(("__missing__", task_id))
                 continue
 
             page_index = row.page_index
@@ -2565,15 +2632,44 @@ class MainWindow(QMainWindow):
 
             if is_page_row:
                 self._apply_page_row_font(expand_item, source_item, progress_item, actions_item)
-                self.tasks_table.setCellWidget(row_index, 0, self._build_blank_actions_widget())
-                self.tasks_table.setCellWidget(row_index, 3, self._build_blank_actions_widget())
+                has_children = False
+                collapsed = False
+            else:
+                has_children = self._task_has_page_children(task)
+                collapsed = self._task_is_collapsed(task_id)
+
+            signature: tuple[object, ...] = (
+                is_page_row,
+                task_id,
+                page_index,
+                has_children,
+                collapsed,
+                str(task.status),
+                source_text,
+            )
+            new_signatures.append(signature)
+
+            reuse = (
+                row_index < old_row_count
+                and row_index < len(previous_signatures)
+                and previous_signatures[row_index] == signature
+                and self.tasks_table.cellWidget(row_index, 0) is not None
+                and self.tasks_table.cellWidget(row_index, 3) is not None
+            )
+            if reuse:
                 continue
 
-            if self._task_has_page_children(task):
-                self.tasks_table.setCellWidget(row_index, 0, self._build_task_expand_widget(task_id))
+            if is_page_row:
+                self._set_task_cell_widget(row_index, 0, self._build_blank_actions_widget())
+                self._set_task_cell_widget(row_index, 3, self._build_blank_actions_widget())
+                continue
+
+            if has_children:
+                self._set_task_cell_widget(row_index, 0, self._build_task_expand_widget(task_id))
             else:
-                self.tasks_table.setCellWidget(row_index, 0, self._build_blank_actions_widget())
-            self.tasks_table.setCellWidget(row_index, 3, self._build_task_actions_widget(task_id, str(task.status), source_text))
+                self._set_task_cell_widget(row_index, 0, self._build_blank_actions_widget())
+            self._set_task_cell_widget(row_index, 3, self._build_task_actions_widget(task_id, str(task.status), source_text))
+        self._task_row_widget_signatures = new_signatures
         self.tasks_table.resizeRowsToContents()
         self._refresh_controls()
         self._repair_inspector_selection()
