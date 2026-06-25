@@ -141,10 +141,10 @@ class TaskEngine:
     def clear_all(self) -> None:
         if not self.tasks:
             return
-        all_paused = all(task.status == "paused" for task in self.tasks)
-        all_done = all(task.status == "done" for task in self.tasks)
-        if not (all_paused or all_done):
-            raise EngineError("E_CLEAR_001", "Clear all requires all tasks paused or all done")
+        if self.state == "running" or any(
+            str(task.status).startswith("running_") for task in self.tasks
+        ):
+            raise EngineError("E_CLEAR_001", "Clear all is not allowed while the queue is running")
         self.tasks = []
         self.result_rows = []
         self.item_results = []

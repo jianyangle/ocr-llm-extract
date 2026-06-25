@@ -72,6 +72,29 @@ BOTTOM_STATUS_BAR_HEIGHT = 34
 # 流式刷新合并窗口（毫秒）：一波引擎事件在此窗口内塌缩成一次表格重建。
 # 取 ~16fps（60ms）：足够"动起来"的视觉流畅度，又能显著削减全量重建次数。
 TABLE_REFRESH_COALESCE_MS = 60
+# 主窗口默认尺寸（设计尺寸）。首次显示会以此尺寸居中到主屏可见区，
+# 既定位窗口、又抵消多屏混合 DPI 下尺寸被放大的问题。
+MAIN_WINDOW_DEFAULT_WIDTH = 1366
+MAIN_WINDOW_DEFAULT_HEIGHT = 840
+
+
+def _centered_geometry(width: int, height: int, available: QRect) -> QRect:
+    """返回在 ``available`` 可见区内居中、且完全落入其中的 ``width × height`` 矩形。
+
+    窗口大于屏幕时收缩到屏幕尺寸并贴可见区左上，保证标题栏与窗口控件可见可点。
+    用于首次显示时把窗口定位到主屏可见区中心（见 ``MainWindow.center_on_primary_screen``）。
+    """
+    rect = QRect(0, 0, min(width, available.width()), min(height, available.height()))
+    rect.moveCenter(available.center())
+    if rect.left() < available.left():
+        rect.moveLeft(available.left())
+    if rect.top() < available.top():
+        rect.moveTop(available.top())
+    if rect.right() > available.right():
+        rect.moveRight(available.right())
+    if rect.bottom() > available.bottom():
+        rect.moveBottom(available.bottom())
+    return rect
 
 
 def _resolve_default_excel_root() -> Path:
@@ -753,7 +776,7 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setMinimumSize(800, 600)
         self.setWindowTitle("OCR 抽取工作台")
-        self.resize(1366, 840)
+        self.resize(MAIN_WINDOW_DEFAULT_WIDTH, MAIN_WINDOW_DEFAULT_HEIGHT)
 
         self._init_widgets()
         self._build_layout()
@@ -2418,9 +2441,9 @@ class MainWindow(QMainWindow):
 
     def _on_clear_all_tasks(self) -> None:
         if not self._can_clear_all():
-            message = "当前任务状态不满足“全部清空”条件。仅当全部处于 paused 或全部处于 done 时，才可清空。"
+            message = "队列正在运行，无法清空。请先等待识别完成或停止后再清空。"
             QMessageBox.warning(self, "无法清空", message)
-            self._set_status("无法清空：需要所有任务均已暂停或已完成。", state="error")
+            self._set_status("无法清空：队列正在运行。", state="error")
             return
         try:
             if hasattr(self.controller, "clear_all_tasks"):
@@ -2526,6 +2549,21 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(level="error", message=str(exc), task_id=task_id, error_code=getattr(exc, "code", None))
             self._set_status(str(exc), state="error")
+
+    def center_on_primary_screen(self) -> None:
+        """把窗口以默认尺寸居中到主屏可见区。
+
+        无边框窗口在「副屏处于负坐标 + 高 DPI 缩放」的多屏布局下，Qt 默认放置会把窗口
+        定位到屏外（只剩任务栏图标、看不到界面），并把尺寸按副屏缩放放大。应在 ``show()``
+        之后调用：以显式默认尺寸 ``setGeometry`` 到主屏可见区中心，可同时归正位置与尺寸。
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        rect = _centered_geometry(
+            MAIN_WINDOW_DEFAULT_WIDTH, MAIN_WINDOW_DEFAULT_HEIGHT, screen.availableGeometry()
+        )
+        self.setGeometry(rect)
 
     def _request_table_refresh(self, *, tasks: bool = False, stream_results: bool = False) -> None:
         """登记一次表格刷新请求，经单次 QTimer 合并后再真正重建（见 _flush_table_refresh）。
@@ -2979,11 +3017,9 @@ class MainWindow(QMainWindow):
         return sum(1 for task in self.controller.tasks if task.status == "paused")
 
     def _can_clear_all(self) -> bool:
-        tasks = list(self.controller.tasks)
-        if not tasks:
+        if not self.controller.tasks:
             return False
-        statuses = {str(task.status) for task in tasks}
-        return statuses == {"paused"} or statuses == {"done"}
+        return not self._queue_running()
 
     def _queue_running(self) -> bool:
         if self._ui_recognition_running:
@@ -3001,7 +3037,7 @@ class MainWindow(QMainWindow):
 
         self.start_button.setEnabled((pending_count > 0 or paused_count > 0) and not queue_running and config_ready)
         self.pause_all_button.setEnabled(pending_count > 0)
-        self.clear_all_button.setEnabled(len(self.controller.tasks) > 0)
+        self.clear_all_button.setEnabled(len(self.controller.tasks) > 0 and not queue_running)
         self.start_button.setToolTip("" if config_ready else config_reason)
         self.write_button.setEnabled(write_count > 0 and not queue_running)
         self.retry_task_button.setEnabled(self._failed_count() > 0 and not queue_running)

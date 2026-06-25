@@ -157,6 +157,10 @@ def main() -> int:
     _register_fonts()
     window = build_main_window()
     window.show()
+    # 无边框窗口在「副屏处于负坐标 + 高 DPI 缩放」的多屏布局下，Qt 默认放置会把窗口定位到
+    # 屏外（只剩任务栏图标、看不到界面），并把尺寸按副屏缩放放大。必须在 show() 之后以显式
+    # 默认尺寸居中到主屏可见区，同时归正位置与尺寸。
+    window.center_on_primary_screen()
     # 无边框窗口在有前台竞争时（如刚关闭同一程序后立即重开）可能被画在其它窗口
     # 之后，表现为"只有任务栏图标、看不到界面"。raise_ 把窗口提到 Z-order 顶部
     # （不受 Windows 前台锁定限制，保证可见），activateWindow 再尝试取得焦点。
